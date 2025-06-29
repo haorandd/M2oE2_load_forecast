@@ -58,7 +58,7 @@ Step 2: Install Dependencies
 
 Step 3: Download Data
 
-Download the dataset [here](https://your-data-link.com) and place it into the appropriate `data/` directory.
+Download the dataset [here](https://zenodo.org/records/15767099) and place it into the appropriate `data/` directory.
 
 
 Step 4: Run the Model
