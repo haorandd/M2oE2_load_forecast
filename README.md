@@ -18,16 +18,17 @@ This repository implements a **variational sequence-to-sequence forecasting mode
 
 ## 📁 Directory Structure
 
-.
+
 ├── main_M2oE2_prob.py # Training and evaluation pipeline
+
 ├── model.py # Model architecture (MetaNet, Variational Seq2Seq)
+
 ├── data_utils.py # Data loading, normalization, batching
+
 ├── result/ # Folder for saving plots
+
 ├── README.md # Project documentation
 
-yaml
-Copy
-Edit
 
 ---
 
@@ -103,11 +104,9 @@ Saved plots can be found in the ./result/ folder after training.
 This repository is licensed under the MIT License.
 
 🙋‍♂️ Acknowledgements
-Developed by [Your Name]. If you use this repo in your work, please cite or acknowledge the project.
+Developed by [Haoran Li and Muhao Guo]. If you use this repo in your work, please cite or acknowledge the project.
 
-yaml
-Copy
-Edit
+If you have any questions, please contact lhaoran@asu.edu or haorandd@mit.edu
 
 ---
 
