@@ -112,10 +112,6 @@ Developed by [Haoran Li and Muhao Guo]. If you use this repo in your work, pleas
 
 If you have any questions, please contact lhaoran@asu.edu or haorandd@mit.edu
 
----
-
-Let me know if you want the name filled in, or a `requirements.txt` added to match your codebase.
-
 
 
 
