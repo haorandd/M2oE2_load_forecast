@@ -4,7 +4,7 @@
 Paper Link: [External Data-Enhanced Meta-Representation for
 Adaptive Probabilistic Load Forecasting](https://arxiv.org/pdf/2506.23201)
 
-Link to Hugging Face: [Data] (https://huggingface.co/datasets/MuhaoGuo/M2oE2TimeSeriesData), [Model] (https://huggingface.co/MuhaoGuo/M2oE2). 
+Link to Hugging Face: [Data](https://huggingface.co/datasets/MuhaoGuo/M2oE2TimeSeriesData), [Model](https://huggingface.co/MuhaoGuo/M2oE2). 
 
 This repository implements a **variational sequence-to-sequence forecasting model** with a **Mixture-of-Experts (MoE)** architecture for multivariate energy time series (e.g., solar or building load). The model provides probabilistic forecasts with uncertainty quantification and is dynamically parameterized by contextual features (temperature, workday, season).
 
