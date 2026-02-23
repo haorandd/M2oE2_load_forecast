@@ -20,6 +20,21 @@ Our approach leverages **Transfer Learning** combined with **Low-Rank Adaptation
     * **LSTM / RNN:** Robust recurrent baselines.
 * **Flexible Covariate Integration:** Seamlessly handles external features such as weather data and temporal embeddings.
 
+
+## Acknowledgements
+
+🙋 **Acknowledgements** Developed by **Haoran Li, Muhao Guo, and Zhe Cheng**. If you use this repo in your work, please cite or acknowledge the project.
+
+If you have any questions, please contact [haoran@asu.edu](mailto:haoran@asu.edu), [haorandd@mit.edu](mailto:haorandd@mit.edu), or [zcheng55@asu.edu](mailto:zcheng55@asu.edu).
+
+## References
+
+1. **H. Li, Z. Cheng, M. Guo, Y. Weng, Y. Sun, V. Tran, and J. Chainaranont**, *M2OE2-GL: A Family of Probabilistic Load Forecasters That Scales to Massive Customers*, arXiv preprint arXiv:2511.17623, 2025. [arXiv](https://arxiv.org/abs/2511.17623)
+
+2. **H. Li, M. Guo, Y. Weng, M. Ilic, and G. Ruan**, *ExARNN: An Environment-Driven Adaptive RNN for Learning Non-Stationary Power Dynamics*, 2025 IEEE Power & Energy Society General Meeting (PESGM), pp. 1–5, 2025. [arXiv](https://arxiv.org/abs/2505.17488)
+
+3. **H. Li, M. Guo, M. Ilic, Y. Weng, and G. Ruan**, *External Data-Enhanced Meta-Representation for Adaptive Probabilistic Load Forecasting*, arXiv preprint arXiv:2506.23201, 2025. [arXiv](https://arxiv.org/abs/2506.23201)
+
 ## Repository Structure
 
 ```text
@@ -36,16 +51,3 @@ M2oE2_load_forecast/
 └── README.md
 
 
-## Acknowledgements
-
-🙋 **Acknowledgements** Developed by **Haoran Li, Muhao Guo, and Zhe Cheng**. If you use this repo in your work, please cite or acknowledge the project.
-
-If you have any questions, please contact [haoran@asu.edu](mailto:haoran@asu.edu), [haorandd@mit.edu](mailto:haorandd@mit.edu), or [zcheng55@asu.edu](mailto:zcheng55@asu.edu).
-
-## References
-
-1. **H. Li, Z. Cheng, M. Guo, Y. Weng, Y. Sun, V. Tran, and J. Chainaranont**, *M2OE2-GL: A Family of Probabilistic Load Forecasters That Scales to Massive Customers*, arXiv preprint arXiv:2511.17623, 2025. [arXiv](https://arxiv.org/abs/2511.17623)
-
-2. **H. Li, M. Guo, Y. Weng, M. Ilic, and G. Ruan**, *ExARNN: An Environment-Driven Adaptive RNN for Learning Non-Stationary Power Dynamics*, 2025 IEEE Power & Energy Society General Meeting (PESGM), pp. 1–5, 2025. [arXiv](https://arxiv.org/abs/2505.17488)
-
-3. **H. Li, M. Guo, M. Ilic, Y. Weng, and G. Ruan**, *External Data-Enhanced Meta-Representation for Adaptive Probabilistic Load Forecasting*, arXiv preprint arXiv:2506.23201, 2025. [arXiv](https://arxiv.org/abs/2506.23201)
