@@ -20,6 +20,39 @@ Our approach leverages **Transfer Learning** combined with **Low-Rank Adaptation
     * **LSTM / RNN:** Robust recurrent baselines.
 * **Flexible Covariate Integration:** Seamlessly handles external features such as weather data and temporal embeddings.
 
+
+
+## Latest Model Variant: Residential-Only Base Model (No LoRA)
+
+The latest model used in our recent experiments is a **base-only M2oE2 variant for the residential setting**, and it does **not** use LoRA.
+
+This design choice is intentional. In this setup, we focus on a more homogeneous residential load pattern rather than cross-domain adaptation between heterogeneous customer groups. As a result, we use a **single base model pipeline** instead of the earlier **global-to-local LoRA adaptation** workflow.
+
+In the current implementation, the corresponding training script is `M2OE2_Base_Only.py`, which is explicitly marked as:
+
+- **NO LoRA**
+- base-model training only
+- base-only evaluation/export workflow
+
+The exported results and plotting pipeline for this latest variant are also base-only. For example, the companion plotting script `M2oE2_base_draw.py` is written for **base-only** forecasts and uses base-model keys only.
+
+### What is different from the earlier LoRA version?
+
+Earlier versions of this repository supported a **global pretraining + LoRA fine-tuning** workflow for adapting a pretrained model to a target transformer or target domain. In contrast, the latest residential-focused model:
+
+- uses a **base-only** training/evaluation workflow,
+- does **not** attach LoRA layers,
+- does **not** perform LoRA fine-tuning,
+- and should be interpreted as a residential/base benchmark rather than a PEFT-adapted model.
+
+### Practical note
+
+If you are reproducing the latest residential results, please use the **base-only scripts and outputs**, not the LoRA-based workflow.
+
+
+
+
+
 ## Data Pipeline
 
 ### Weekly `.npz` Files
@@ -160,6 +193,7 @@ M2oE2_load_forecast/
 │   ├── data_utils_Final.py                  # Data loading and preprocessing utilities
 │   └── model_Final.py                    # Base model definitions (VAE/M2oE2)
 └── README.md
+
 
 
 
