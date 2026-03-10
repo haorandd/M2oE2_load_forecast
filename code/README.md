@@ -40,14 +40,15 @@ If you have any questions, please contact [haoran@asu.edu](mailto:haoran@asu.edu
 ```text
 M2oE2_load_forecast/
 ├── code/
-│   ├── lora_utils.py                  # LoRA implementation (Linear layers, parameter freezing)
-│   ├── main_variational_base_peak.py  # VAE model training/eval with Peak-Weighted Loss
+│   ├── lora_utils_Final.py                  # LoRA implementation (Linear layers, parameter freezing)
+│   ├── main_variational_peak_Final.py  # VAE model training/eval with Peak-Weighted Loss
 │   ├── main_CNNGRU_var_v1.py          # CNN-GRU probabilistic model workflow
 │   ├── main_LSTM_var_v1.py            # LSTM probabilistic model workflow
 │   ├── main_RNN_var_v1_ft.py          # RNN/GRU probabilistic model workflow
 │   ├── peak_metrics.py                # Auxiliary metrics for peak load analysis (ERCOT/PJM style)
-│   ├── data_utils.py                  # Data loading and preprocessing utilities
-│   └── model_v1.py                    # Base model definitions (VAE/M2oE2)
+│   ├── data_utils_Final.py                  # Data loading and preprocessing utilities
+│   └── model_Final.py                    # Base model definitions (VAE/M2oE2)
 └── README.md
+
 
 
