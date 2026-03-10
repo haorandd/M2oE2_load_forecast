@@ -20,6 +20,117 @@ Our approach leverages **Transfer Learning** combined with **Low-Rank Adaptation
     * **LSTM / RNN:** Robust recurrent baselines.
 * **Flexible Covariate Integration:** Seamlessly handles external features such as weather data and temporal embeddings.
 
+## Data Pipeline
+
+### Weekly `.npz` Files
+
+The preprocessing utilities generate one compressed weekly file per transformer:
+
+- `processed_data/weeks_tensor_<XFMR>.npz`
+
+Each file stores:
+
+- `tensor`: weekly feature tensor of shape `(W, 168, F)`
+- `features`
+- `time_index`
+- `time_index_str`
+- `week_start`
+- `week_end`
+- `xfmr` :contentReference[oaicite:22]{index=22} :contentReference[oaicite:23]{index=23}
+
+Each weekly tensor is built by:
+
+- sorting records by timestamp,
+- creating a continuous hourly timeline,
+- splitting into consecutive **168-hour weeks**,
+- keeping only fully observed weeks. :contentReference[oaicite:24]{index=24}
+
+## Combined Dataset
+
+`Combine_Final.py` combines selected transformer weekly files into:
+
+- `processed_data/weeks_tensor_all.npz`
+
+The current combined dataset is built from four customer-group datasets:
+
+- `residential+small_commercial`
+- `small_commercial1`
+- `small_commercial2`
+- `large_commercial`
+
+## ONCOR Feature Mapping Used by the Current Main Script
+
+In the current ONCOR loader, the main script uses:
+
+- `load  <- KWH`
+- `temp  <- SURDPOINTTEMPFAHRENHEIT`
+- `workday <- RELATIVEHUMIDITY`
+- `season  <- HEATINDEXFAHRENHEIT`
+
+**Important note:** in the current ONCOR implementation, `workday` and `season` are variable-slot names in the training pipeline, but for this dataset they are mapped to humidity and heat-index features rather than literal weekday/season labels.
+
+## Forecast Horizon and Sample Construction
+
+The current variational main script uses:
+
+- `encoder_len_weeks = 1`
+- `decoder_len_weeks = 1`
+- `num_in_week = 168`
+- `output_len = 3`
+
+This means:
+
+- each encoder input contains **1 week = 168 hourly points**,
+- each decoder week also has **168 hourly points**,
+- the model predicts **3 hours ahead per decoder position**,
+- the number of rolling decoder positions is `168 - 3 + 1 = 166`.
+
+So the model is **not** producing a single 166-hour horizon. Instead, it produces **166 rolling 3-hour forecasts** within the decoder week.
+
+## Important Note on Graphs and Model Outputs
+
+Several evaluation plots in the current code can be misread if their meaning is not stated clearly.
+
+During evaluation, the plotting code extracts:
+
+- `mu_first = mu_preds[:, :, 0]`
+- `tgt_first = tgt[:, :, 0]`
+
+That means the default graphs visualize **only the first horizon** from each rolling 3-hour forecast window.
+
+### What the Default Plots Actually Show
+
+- **`pred_only` plots**  
+  Show the target first-horizon series and predicted first-horizon mean/std across all rolling decoder positions.
+
+- **`with_hist` plots**  
+  Show:
+  - the 168-point encoder history,
+  - followed by the sequence of **166 first-horizon rolling predictions**,
+  - plus uncertainty bands.  
+  These plots are useful, but the post-history segment is **not a single 166-hour rollout**. It is the first-step slice of all rolling decoder forecasts.
+
+- **`global_overlay` plot**  
+  Overlays first-horizon targets and predictions for all samples.
+
+### Normalization Note
+
+All features in `process_seq2seq_data()` are normalized using `MinMaxScaler`, so the default plots are displayed in **normalized space**, not original engineering units.
+
+## LoRA Adaptation Details
+
+The current LoRA workflow:
+
+- loads the pretrained base checkpoint,
+- replaces `decoder.head_mu` with `LoRALinear(...)`,
+- replaces `decoder.head_logvar` with `LoRALinear(...)`,
+- freezes all original model parameters,
+- trains only LoRA parameters.
+
+In the current script, LoRA fine-tuning is performed on the target transformer:
+
+- `small_commercial2`
+
 
 ## Acknowledgements
 
@@ -49,6 +160,7 @@ M2oE2_load_forecast/
 │   ├── data_utils_Final.py                  # Data loading and preprocessing utilities
 │   └── model_Final.py                    # Base model definitions (VAE/M2oE2)
 └── README.md
+
 
 
 
