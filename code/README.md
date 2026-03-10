@@ -36,7 +36,7 @@ Each file stores:
 - `time_index_str`
 - `week_start`
 - `week_end`
-- `xfmr` :contentReference[oaicite:22]{index=22} :contentReference[oaicite:23]{index=23}
+- `xfmr` : the data we used
 
 Each weekly tensor is built by:
 
@@ -160,6 +160,7 @@ M2oE2_load_forecast/
 │   ├── data_utils_Final.py                  # Data loading and preprocessing utilities
 │   └── model_Final.py                    # Base model definitions (VAE/M2oE2)
 └── README.md
+
 
 
 
