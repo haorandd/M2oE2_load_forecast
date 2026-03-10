@@ -490,7 +490,7 @@ if __name__ == "__main__":
         print(f"[✓] Base model checkpoint found: {BASE_CKPT}")
 
     # === LoRA fine-tuning on new data ===
-    times, load, temp, workday, season = get_data_oncor_load_weekly(XFMR="176391692")
+    times, load, temp, workday, season = get_data_oncor_load_weekly(XFMR="data1") #the dataset you aim to forcast 
     feature_dict = {'load': load, 'temp': temp, 'workday': workday, 'season': season}
     train_data, test_data, _ = process_seq2seq_data(
         feature_dict     = feature_dict, train_ratio      = 0.7, output_len       = output_len,
@@ -576,4 +576,5 @@ if __name__ == "__main__":
         except ImportError:
             print(f"[i] 'openpyxl' not found. Skipping Excel export. (Install with 'pip install openpyxl')")
         except Exception as e:
+
             print(f"[!] Error saving to Excel: {e}")
