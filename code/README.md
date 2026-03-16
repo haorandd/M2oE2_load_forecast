@@ -49,7 +49,79 @@ Earlier versions of this repository supported a **global pretraining + LoRA fine
 
 If you are reproducing the latest residential results, please use the **base-only scripts and outputs**, not the LoRA-based workflow.
 
+## External Data Naming Note
 
+### Legacy naming vs. actual Oncor covariates
+
+The variable names used in the older Oncor scripts follow a legacy convention and do **not** exactly match the actual semantics of the external channels currently loaded by the preprocessing pipeline.
+
+In the current Oncor loader, the four base channels are returned as:
+
+- `load` → load / kWh target
+- `temp` → `SURDPOINTTEMPFAHRENHEIT`
+- `workday` → `RELATIVEHUMIDITY`
+- `season` → `HEATINDEXFAHRENHEIT`
+
+This means that, in the current codebase, the names `temp`, `workday`, and `season` should be understood as **compatibility placeholders**, rather than literal descriptions of the raw covariates.
+
+### Implication for `temp_fc_*`
+
+The `v1_temp` version additionally constructs the following forecast-summary features:
+
+- `temp_fc_mean24`
+- `temp_fc_max24`
+- `temp_fc_min24`
+- `temp_fc_ramp24`
+
+These are computed from the channel currently named `temp`. Under the present Oncor preprocessing, these `temp_fc_*` features are therefore derived from `SURDPOINTTEMPFAHRENHEIT`, not from true ambient air temperature.
+
+### Recommended cleanup
+
+For future cleanup, we recommend updating the preprocessing and README names so that the external channels reflect their actual meanings. For example:
+
+- rename `temp` to `dewpoint_f`
+- rename `workday` to `relative_humidity`
+- rename `season` to `heat_index_f`
+
+At the same time, we recommend **keeping** the humidity- and heat-related channels in the model, since they still provide useful weather context.
+
+A better long-term solution is to **add the true external variables explicitly**, rather than replacing the current ones. In particular, future versions should consider including:
+
+- true air temperature
+- relative humidity
+- heat index
+- calendar / day-type indicator
+- season label
+
+This would make the README, code, and data semantics consistent, while preserving the useful weather variables already present in the current pipeline.
+
+---
+
+## Warmup Schedule
+
+This training setup uses two warmup mechanisms:
+
+### 1. Model warmup
+
+A short internal warmup is applied at the model level:
+
+- `warmup_ep = 10`
+
+This warmup is passed into the model forward call and is only active during the early training stage.
+
+### 2. Peak-loss warmup
+
+The peak-aware loss terms are **not** applied at full strength from the start. Instead, they are linearly ramped up during the first 300 epochs:
+
+- `V5_PEAK_WARM = 300`
+
+The following peak-related loss weights increase gradually from 0 to their configured values over epochs 1 to 300:
+
+- `lam_thr`
+- `lam_q`
+- `lam_time`
+
+In other words, during the first 300 epochs, the model gradually transitions from primarily learning the base probabilistic forecasting objective to increasingly emphasizing peak fidelity. After epoch 300, these peak-loss weights reach their full configured values and remain fixed for the rest of training.
 
 
 
