@@ -51,7 +51,7 @@ If you are reproducing the latest residential results, please use the **base-onl
 
 ## External Data Naming Note
 
-### Legacy naming vs. actual Oncor covariates
+### Legacy naming vs. actual covariates
 
 The variable names used in the older Oncor scripts follow a legacy convention and do **not** exactly match the actual semantics of the external channels currently loaded by the preprocessing pipeline.
 
