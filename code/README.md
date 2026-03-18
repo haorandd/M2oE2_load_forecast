@@ -20,9 +20,73 @@ Our approach leverages **Transfer Learning** combined with **Low-Rank Adaptation
     * **LSTM / RNN:** Robust recurrent baselines.
 * **Flexible Covariate Integration:** Seamlessly handles external features such as weather data and temporal embeddings.
 
+## Latest Main/Model Pair: Full Future-24h Weather + `model_v2` Gating
 
+The latest implementation used in our recent experiments is based on a **base-only M2oE2 pipeline** with an updated `main` script and the corresponding **`model_v2` architecture**.  
+This version is designed for the recent residential-focused experiments and should be treated as the **current default pair**:
 
-## Latest Model Variant: Residential-Only Base Model (No LoRA)
+- **latest `main_M2OE2_Final`**
+- **`model_v2`**
+- **base-only training/evaluation/export**
+- **no LoRA workflow**
+
+### What is new in the latest `main`?
+
+The latest `main` extends the external input design by including the **complete future 24-hour weather sequence** in the decoder-side external features.
+
+In particular, the current external feature set now includes:
+
+- current temperature-related context,
+- calendar/context features such as `workday` and `season`,
+- derived thermal indicators such as `CDD` and `HDD`,
+- and the full future weather forecast:
+  - `temp_fc_tplus00`
+  - `temp_fc_tplus01`
+  - ...
+  - `temp_fc_tplus23`
+
+As a result, the raw external dimension is expanded to include the **full future 24h temperature trajectory**, rather than only a minimal or partially aggregated weather signal.
+
+This means the latest `main` is no longer just using a single temperature channel. It now explicitly passes a **thermal block** that contains the full future temperature information needed by the updated model.
+
+### What changed in `model_v2`?
+
+`model_v2` was updated so that its gating logic can properly consume the new **thermal block** from the expanded external input.
+
+Compared with the earlier version, the key change is:
+
+- the gating path is adjusted to work with the **full thermal feature subset**,
+- so the model can directly use the richer future-24h weather information,
+- while the rest of the forecasting pipeline remains aligned with the base-only setup.
+
+In practical terms, `model_v2` is the architecture version that matches the latest external feature definition produced by the new `main`.
+
+### Important compatibility note
+
+The latest `main` is intended to be used **together with `model_v2`**.
+
+Please do **not** mix:
+
+- the **latest `main`** with an older model version that expects a different external-input structure, or
+- **`model_v2`** with an older `main` that does not provide the full future-24h weather block.
+
+Otherwise, you may encounter:
+
+- input-dimension mismatches,
+- gating/external-feature inconsistencies,
+- or misleading experimental comparisons across versions.
+
+### Practical note
+
+When reproducing the newest results, please make sure that:
+
+- the **latest `main`** is used,
+- the corresponding **`model_v2`** is used,
+- and the experiment is interpreted as a **base-only residential variant with full future-24h weather input**.
+
+In short, the current implementation should be understood as a **matched `main` + `model_v2` pair**, where the main script defines the expanded weather features and `model_v2` is the architecture updated to consume them correctly.
+
+## Second Best Model Variant: Residential-Only Base Model (No LoRA)
 
 The latest model used in our recent experiments is a **base-only M2oE2 variant for the residential setting**, and it does **not** use LoRA.
 
