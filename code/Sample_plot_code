@@ -1,0 +1,812 @@
+#for the latest model main_M2oE2_Final
+
+
+import os
+import glob
+import json
+from datetime import datetime
+
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import matplotlib.dates as mdates
+
+
+# ============================================================
+# Config
+# ============================================================
+CSV_PATH = "XFMR_forecast_data_id.csv" #the evaluated data
+
+XLSX_PATH = "vae_base_only_v2_blockExpert3_raw24h_topk2_peakWarm150_XFMRid.xlsx" 
+SCALER_META_JSON = "vae_base_scaler_meta_v2_blockExpert3_raw24h_topk2_peakWarm150.json"
+
+TARGET_XFMR = id
+ENCODER_LEN_WEEKS = 1
+
+BASE_MODEL_KEYS = [
+    "VAE_BASE_v2_blockExpert3_raw24h_topk2_peakWarm150",
+    "VAE_BASE_v2_blockExpert3_raw24h_topk2",
+    "VAE_BASE_v2_blockExpert3_raw24h",
+    "VAE_BASE_v2_blockExpert3",
+    "VAE_BASE_v2",
+    "VAE_BASE",
+    "BASE",
+]
+
+OUT_DIR_BASE = "sudden_change_top3_plots_v2_blockExpert3_raw24h_topk2_peakWarm150"
+SAVE_FIG = True
+SHOW_FIG = True
+
+LOAD_UNIT = "kW"
+TEMP_UNIT = "°F"
+
+# ---- shock selection params ----
+Q = 0.95
+TOP_N_SEARCH = 10
+TOP_K = 3
+USE_BOUNDARY = True
+USE_WITHIN = True
+
+
+# ============================================================
+# Basic helpers
+# ============================================================
+def resolve_existing_file(path: str, patterns=None):
+    if os.path.exists(path):
+        return path
+
+    if patterns is None:
+        patterns = ["*"]
+
+    cands = []
+    for pat in patterns:
+        cands.extend(glob.glob(pat))
+
+    cands = sorted(set(cands))
+    if not cands:
+        raise FileNotFoundError(f"[ERR] File not found: {path}")
+
+    def score(p):
+        name = os.path.basename(p).lower()
+        s = 0
+        if "v2" in name:
+            s += 10
+        if "blockexpert3" in name:
+            s += 8
+        if "raw24h" in name:
+            s += 8
+        if "topk2" in name:
+            s += 6
+        if "peakwarm150" in name:
+            s += 6
+        if "xfmrid" in name:
+            s += 6
+        if "base_only" in name:
+            s += 4
+        if "scaler_meta" in name:
+            s += 4
+        return s
+
+    best = sorted(cands, key=score, reverse=True)[0]
+    print(f"[WARN] Target file not found: {path}")
+    print(f"[INFO] Auto-selected instead: {best}")
+    return best
+
+
+def make_unique_outdir(base_dir: str, xlsx_path: str):
+    stem = os.path.splitext(os.path.basename(xlsx_path))[0]
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    out_dir = os.path.join(base_dir, f"{stem}__{ts}")
+    os.makedirs(out_dir, exist_ok=True)
+    return out_dir
+
+
+def _guess_col(df, candidates):
+    for c in candidates:
+        if c in df.columns:
+            return c
+    return None
+
+
+# ============================================================
+# Scaler helpers (robust to old/new meta)
+# ============================================================
+def load_scaler_meta(path: str):
+    path = resolve_existing_file(path, patterns=["*.json"])
+    with open(path, "r", encoding="utf-8") as f:
+        meta = json.load(f)
+    return meta, path
+
+
+def get_load_denorm_mode(meta: dict):
+    if ("load_min" in meta) and ("load_max" in meta):
+        return "minmax"
+    if "load_scale" in meta:
+        return "scale"
+    raise ValueError(
+        f"[ERR] Cannot infer load denorm mode from scaler meta. "
+        f"Available keys: {list(meta.keys())}"
+    )
+
+
+def denorm_load(x, meta: dict):
+    mode = get_load_denorm_mode(meta)
+
+    if mode == "minmax":
+        load_min = float(meta["load_min"])
+        load_max = float(meta["load_max"])
+        return x * (load_max - load_min) + load_min
+
+    # mode == "scale"
+    load_scale = float(meta["load_scale"])
+    offset_keys = ["load_center", "load_mean", "load_mu", "load_offset", "load_bias"]
+    offset = 0.0
+    for k in offset_keys:
+        if k in meta:
+            offset = float(meta[k])
+            break
+    return x * load_scale + offset
+
+
+def denorm_load_std(std, meta: dict):
+    mode = get_load_denorm_mode(meta)
+
+    if mode == "minmax":
+        return std * (float(meta["load_max"]) - float(meta["load_min"]))
+
+    return std * float(meta["load_scale"])
+
+
+# ============================================================
+# XLSX helpers
+# ============================================================
+def pick_model_name_by_keys(df_xlsx: pd.DataFrame, keys):
+    if "model_name" not in df_xlsx.columns:
+        return None
+
+    names = sorted(df_xlsx["model_name"].dropna().unique().tolist())
+    print(f"[INFO] Available model_name values: {names}")
+
+    for k in keys:
+        hits = [n for n in names if k in str(n)]
+        if hits:
+            return hits[0]
+
+    # fallback: first name containing BASE
+    hits = [n for n in names if "BASE" in str(n).upper()]
+    if hits:
+        return hits[0]
+
+    return names[0] if names else None
+
+
+def extract_one_sample(df_xlsx: pd.DataFrame, sample_index: int, model_name: str):
+    if model_name is None:
+        return None
+
+    required_cols = ["sample_index", "model_name", "value_type", "time_step", "value"]
+    missing = [c for c in required_cols if c not in df_xlsx.columns]
+    if missing:
+        raise ValueError(f"[ERR] XLSX missing columns: {missing}")
+
+    mask = (
+        (df_xlsx["sample_index"] == sample_index) &
+        (df_xlsx["model_name"] == model_name)
+    )
+
+    if "feature_name" in df_xlsx.columns:
+        # 优先用 load
+        dm0 = df_xlsx[mask & (df_xlsx["feature_name"] == "load")].copy()
+        if not dm0.empty:
+            dm = dm0
+        else:
+            dm = df_xlsx[mask].copy()
+    else:
+        dm = df_xlsx[mask].copy()
+
+    if dm.empty:
+        return None
+
+    def get(vtype: str):
+        x = dm[dm["value_type"] == vtype].sort_values("time_step")
+        if x.empty:
+            return np.array([]), np.array([])
+        return x["time_step"].to_numpy(), x["value"].to_numpy()
+
+    x_h, y_h = get("history")
+    x_t, y_t = get("true")
+    x_p, y_p = get("pred_mean")
+    x_s, y_s = get("pred_std")
+
+    return {
+        "x_h": x_h,
+        "hist": y_h,
+        "x_t": x_t,
+        "true": y_t,
+        "x_p": x_p,
+        "pred": y_p,
+        "std": y_s,
+    }
+
+
+def denorm_pack_load(pack: dict, meta: dict):
+    if pack is None:
+        return None
+
+    out = dict(pack)
+    if len(out["hist"]) > 0:
+        out["hist"] = denorm_load(out["hist"], meta)
+    if len(out["true"]) > 0:
+        out["true"] = denorm_load(out["true"], meta)
+    if len(out["pred"]) > 0:
+        out["pred"] = denorm_load(out["pred"], meta)
+    if len(out["std"]) > 0:
+        out["std"] = denorm_load_std(out["std"], meta)
+    return out
+
+
+# ============================================================
+# CSV parsing
+# ============================================================
+def load_hourly_df(csv_path: str, xfmr: int):
+    csv_path = resolve_existing_file(csv_path, patterns=["*.csv"])
+    df = pd.read_csv(csv_path)
+
+    if "XFMR" not in df.columns:
+        raise KeyError(f"[ERR] 'XFMR' column not found. Columns={df.columns.tolist()}")
+
+    df = df[df["XFMR"] == xfmr].copy()
+    if df.empty:
+        raise ValueError(f"[ERR] No rows for XFMR={xfmr} in {csv_path}")
+
+    date_col = _guess_col(df, ["DATE1", "DATE", "date", "Date"])
+    hour_col = _guess_col(df, ["HOUR1", "HOUR", "hour", "Hour"])
+    if date_col is None or hour_col is None:
+        raise KeyError(
+            f"[ERR] Cannot find date/hour columns. "
+            f"Columns={df.columns.tolist()}"
+        )
+
+    df[date_col] = pd.to_datetime(df[date_col])
+    df["ts"] = df[date_col] + pd.to_timedelta(df[hour_col].astype(int), unit="h")
+
+    temp_col = _guess_col(df, ["TEMPERATURE", "TEMP", "Temperature", "temperature"])
+    if temp_col is None:
+        raise KeyError(f"[ERR] Cannot find temperature column. Columns={df.columns.tolist()}")
+
+    load_col = _guess_col(df, [
+        "LOAD", "Load", "LOAD_KW", "LOAD_AVG", "KW", "kW",
+        "LOAD1", "LOAD_VALUE", "LOAD_MW", "MW", "P", "POWER", "P_KW"
+    ])
+    if load_col is None:
+        for c in df.columns:
+            if isinstance(c, str) and ("load" in c.lower()):
+                load_col = c
+                break
+
+    agg_cols = {temp_col: "mean"}
+    if load_col is not None:
+        agg_cols[load_col] = "mean"
+
+    hourly = (
+        df.groupby("ts", as_index=False)
+          .agg(agg_cols)
+          .sort_values("ts")
+          .reset_index(drop=True)
+    )
+
+    t0 = hourly["ts"].min()
+    hourly["week_idx"] = ((hourly["ts"] - t0).dt.total_seconds() // (3600 * 168)).astype(int)
+    week_start = hourly.groupby("week_idx")["ts"].min().rename("week_start_ts").reset_index()
+
+    print(f"[CSV] XFMR {xfmr} time range: {hourly['ts'].min()} -> {hourly['ts'].max()}")
+    print(f"[CSV] temp_col={temp_col} | load_col={load_col if load_col is not None else '(NOT FOUND)'}")
+
+    return hourly, week_start, temp_col, load_col, csv_path
+
+
+def load_temp_from_csv(csv_path: str, xfmr: int, start_ts: pd.Timestamp, periods: int):
+    df = pd.read_csv(csv_path)
+    df = df[df["XFMR"] == xfmr].copy()
+    if df.empty:
+        raise ValueError(f"[ERR] No rows for XFMR={xfmr} in {csv_path}")
+
+    date_col = _guess_col(df, ["DATE1", "DATE", "date", "Date"])
+    hour_col = _guess_col(df, ["HOUR1", "HOUR", "hour", "Hour"])
+    temp_col = _guess_col(df, ["TEMPERATURE", "TEMP", "Temperature", "temperature"])
+    if date_col is None or hour_col is None or temp_col is None:
+        raise KeyError(f"[ERR] Cannot parse time/temp cols from CSV. Columns={df.columns.tolist()}")
+
+    df[date_col] = pd.to_datetime(df[date_col])
+    df["ts"] = df[date_col] + pd.to_timedelta(df[hour_col].astype(int), unit="h")
+
+    temp_by_ts = df.groupby("ts", as_index=True)[temp_col].mean().sort_index()
+
+    idx = pd.date_range(start=start_ts, periods=periods, freq="h")
+    out = temp_by_ts.reindex(idx).ffill().bfill()
+    return idx, out.to_numpy()
+
+
+# ============================================================
+# Sudden-week finder
+# ============================================================
+def find_top_sudden_weeks_from_hourly(
+    hourly: pd.DataFrame,
+    value_col: str,
+    *,
+    q: float = 0.95,
+    top_n: int = 10,
+    use_boundary: bool = True,
+    use_within: bool = True,
+):
+    d = hourly[["ts", "week_idx", value_col]].copy()
+    d["dV"] = d[value_col].diff().abs()
+
+    rows = []
+    for w, wk in d.groupby("week_idx", sort=True):
+        if len(wk) < 2:
+            continue
+
+        dV_within = float(wk["dV"].max()) if use_within else 0.0
+
+        if use_boundary and w > 0:
+            first_pos = wk.index.min()
+            dV_boundary = float(d.loc[first_pos, "dV"])
+        else:
+            dV_boundary = 0.0
+
+        dV_metric = max(dV_within, dV_boundary)
+
+        rows.append({
+            "week_idx": int(w),
+            "week_start_ts": wk["ts"].min(),
+            "dV_metric": dV_metric,
+            "dV_within": dV_within,
+            "dV_boundary": dV_boundary,
+        })
+
+    wkdf = pd.DataFrame(rows)
+    if wkdf.empty:
+        return wkdf
+
+    thr = wkdf["dV_metric"].quantile(q)
+    cand = (
+        wkdf[wkdf["dV_metric"] >= thr]
+        .sort_values("dV_metric", ascending=False)
+        .head(top_n)
+        .reset_index(drop=True)
+    )
+
+    print(f"[SuddenWeeks] col={value_col} q={q} thr={thr:.4f} candidates={len(cand)}")
+    return cand
+
+
+def pick_topk_valid_candidate_weeks(
+    cand_weeks: pd.DataFrame,
+    df_xlsx: pd.DataFrame,
+    model_base: str,
+    encoder_len_weeks: int,
+    top_k: int,
+):
+    picks = []
+    if cand_weeks is None or cand_weeks.empty:
+        return picks
+
+    for i in range(min(len(cand_weeks), TOP_N_SEARCH)):
+        w = int(cand_weeks.loc[i, "week_idx"])
+        ts = pd.to_datetime(cand_weeks.loc[i, "week_start_ts"])
+        sample_idx = int(w - encoder_len_weeks)
+
+        if sample_idx < 0:
+            continue
+
+        pack = extract_one_sample(df_xlsx, sample_idx, model_base)
+        if pack is None:
+            continue
+
+        picks.append({
+            "week_idx": w,
+            "week_start_ts": ts,
+            "sample_index": sample_idx,
+            "shock_metric": float(cand_weeks.loc[i, "dV_metric"]),
+        })
+
+        if len(picks) >= top_k:
+            break
+
+    return picks
+
+
+def compute_load_shock_from_xlsx(df_xlsx: pd.DataFrame, meta: dict, model_base: str):
+    dfb = df_xlsx[df_xlsx["model_name"] == model_base].copy()
+    if dfb.empty:
+        raise ValueError(f"[ERR] No rows for model_base='{model_base}' in XLSX.")
+
+    if "feature_name" in dfb.columns:
+        dfb0 = dfb[dfb["feature_name"] == "load"].copy()
+        if not dfb0.empty:
+            dfb = dfb0
+
+    sample_ids = sorted(dfb["sample_index"].dropna().unique().tolist())
+
+    out = []
+    for sid in sample_ids:
+        pack = extract_one_sample(df_xlsx, int(sid), model_base)
+        if pack is None:
+            continue
+
+        pack = denorm_pack_load(pack, meta)
+        hist = pack["hist"]
+        true = pack["true"]
+
+        if len(true) < 2:
+            continue
+
+        within = float(np.max(np.abs(np.diff(true))))
+        boundary = float(abs(true[0] - hist[-1])) if len(hist) > 0 else 0.0
+        metric = max(within, boundary)
+
+        out.append({
+            "sample_index": int(sid),
+            "dL_metric": metric,
+            "dL_within": within,
+            "dL_boundary": boundary,
+        })
+
+    if not out:
+        return pd.DataFrame()
+
+    return pd.DataFrame(out).sort_values("dL_metric", ascending=False).reset_index(drop=True)
+
+
+# ============================================================
+# Plot
+# ============================================================
+def plot_one_week(
+    *,
+    df_xlsx: pd.DataFrame,
+    sample_index: int,
+    decoder_week_start_ts: pd.Timestamp,
+    tag: str,
+    out_dir: str,
+    meta: dict,
+    load_unit: str,
+    temp_unit: str,
+    model_base: str,
+    csv_path: str,
+    xfmr: int,
+    xlsx_tag: str,
+    save_fig: bool = True,
+    show_fig: bool = True,
+):
+    base = extract_one_sample(df_xlsx, sample_index, model_base)
+    if base is None:
+        raise ValueError(f"[ERR] sample_index={sample_index} not found for model={model_base}")
+
+    base = denorm_pack_load(base, meta)
+
+    def get_max_step(p):
+        vals = []
+        if len(p["x_h"]):
+            vals.append(int(np.max(p["x_h"])))
+        if len(p["x_t"]):
+            vals.append(int(np.max(p["x_t"])))
+        if len(p["x_p"]):
+            vals.append(int(np.max(p["x_p"])))
+        return max(vals) if vals else 0
+
+    max_step = get_max_step(base)
+    total_len = max_step + 1
+    if total_len <= 1:
+        print(f"[WARN] total_len={total_len} too small. Skip sample={sample_index}")
+        return None
+
+    history_start = pd.to_datetime(decoder_week_start_ts) - pd.Timedelta(hours=168)
+    full_time = pd.date_range(start=history_start, periods=total_len, freq="h")
+
+    def to_dt(x_steps):
+        if len(x_steps) == 0:
+            return []
+        x_steps = np.asarray(x_steps).astype(int)
+        x_steps = np.clip(x_steps, 0, total_len - 1)
+        return full_time[x_steps]
+
+    temp_time, temp_vals = load_temp_from_csv(csv_path, xfmr, history_start, total_len)
+
+    fig, ax = plt.subplots(figsize=(13, 4.2))
+
+    # Load curves
+    if len(base["x_h"]) > 0:
+        ax.plot(to_dt(base["x_h"]), base["hist"], color="black", linewidth=1.6, label="History")
+
+    if len(base["x_t"]) > 0:
+        ax.plot(to_dt(base["x_t"]), base["true"], color="red", linestyle="--", linewidth=1.6, label="True")
+
+    if len(base["x_p"]) > 0:
+        ax.plot(to_dt(base["x_p"]), base["pred"], color="blue", linewidth=1.7, alpha=0.95, label="Base (mean)")
+        if len(base["std"]) == len(base["pred"]) and len(base["std"]) > 0:
+            xp = to_dt(base["x_p"])
+            ax.fill_between(
+                xp,
+                base["pred"] - base["std"],
+                base["pred"] + base["std"],
+                color="blue",
+                alpha=0.15,
+                label="Base (±1σ)"
+            )
+
+    # history / forecast boundary
+    if total_len > 168:
+        ax.axvline(full_time[167], color="gray", linestyle="--", linewidth=1.0, alpha=0.7)
+
+    ax.set_ylabel(f"Load ({load_unit})")
+    ax.set_xlabel("Date")
+    ax.grid(alpha=0.25)
+
+    # Time format
+    ax.xaxis.set_major_locator(mdates.AutoDateLocator())
+    ax.xaxis.set_major_formatter(mdates.DateFormatter("%m-%d\n%H:%M"))
+
+    # Temperature axis
+    ax2 = ax.twinx()
+    if len(temp_time) > 168:
+        ax2.plot(temp_time[:168], temp_vals[:168], linestyle=":", linewidth=1.1, alpha=0.55, label="Temp (hist)")
+        ax2.plot(temp_time[168:], temp_vals[168:], linestyle=":", linewidth=1.2, alpha=0.85, label="Temp (fore)")
+    else:
+        ax2.plot(temp_time, temp_vals, linestyle=":", linewidth=1.1, alpha=0.75, label="Temp")
+
+    ax2.set_ylabel(f"Temperature ({temp_unit})")
+
+    # Keep load lines in front
+    ax.set_zorder(ax2.get_zorder() + 1)
+    ax.patch.set_visible(False)
+
+    # Title
+    ax.set_title(
+        f"{tag} | XFMR={xfmr} | week_start={pd.to_datetime(decoder_week_start_ts).date()} | sample={sample_index}\n"
+        f"{xlsx_tag} | model={model_base}"
+    )
+
+    # Legend
+    h1, l1 = ax.get_legend_handles_labels()
+    h2, l2 = ax2.get_legend_handles_labels()
+    ax.legend(h1 + h2, l1 + l2, loc="upper left", fontsize=9, framealpha=0.9)
+
+    plt.tight_layout()
+
+    out_png = None
+    if save_fig:
+        week_str = str(pd.to_datetime(decoder_week_start_ts).date())
+        safe_tag = tag.replace(" ", "_")
+        out_png = os.path.join(
+            out_dir,
+            f"{xlsx_tag}__{safe_tag}__xfmr{xfmr}__week{week_str}__sample{sample_index}.png"
+        )
+        plt.savefig(out_png, dpi=220, bbox_inches="tight")
+        print(f"[✓] Saved: {out_png}")
+
+    if show_fig:
+        plt.show()
+    else:
+        plt.close(fig)
+
+    return out_png
+
+
+# ============================================================
+# Main
+# ============================================================
+def main():
+    xlsx_path = resolve_existing_file(XLSX_PATH, patterns=["*.xlsx"])
+    meta, scaler_path = load_scaler_meta(SCALER_META_JSON)
+
+    print(f"[INFO] Using XLSX        : {xlsx_path}")
+    print(f"[INFO] Using scaler meta : {scaler_path}")
+
+    df_xlsx = pd.read_excel(xlsx_path)
+    model_base = pick_model_name_by_keys(df_xlsx, BASE_MODEL_KEYS)
+    if model_base is None:
+        raise ValueError("[ERR] Cannot find a valid BASE model_name in XLSX.")
+
+    print(f"[INFO] model_base picked: {model_base}")
+
+    out_dir = make_unique_outdir(OUT_DIR_BASE, xlsx_path)
+    xlsx_tag = os.path.splitext(os.path.basename(xlsx_path))[0]
+    print(f"[INFO] Output folder: {out_dir}")
+
+    hourly, week_start_map, temp_col, load_col, csv_path_used = load_hourly_df(CSV_PATH, TARGET_XFMR)
+
+    summary = {
+        "xfmr": int(TARGET_XFMR),
+        "xlsx": os.path.basename(xlsx_path),
+        "scaler_meta": os.path.basename(scaler_path),
+        "csv": os.path.basename(csv_path_used),
+        "model_base": model_base,
+        "params": {
+            "Q": Q,
+            "TOP_N_SEARCH": TOP_N_SEARCH,
+            "TOP_K": TOP_K,
+            "USE_BOUNDARY": USE_BOUNDARY,
+            "USE_WITHIN": USE_WITHIN,
+            "ENCODER_LEN_WEEKS": ENCODER_LEN_WEEKS,
+        },
+        "results": {}
+    }
+
+    # --------------------------------------------------------
+    # (1) Temperature sudden change Top3
+    # --------------------------------------------------------
+    cand_temp = find_top_sudden_weeks_from_hourly(
+        hourly,
+        temp_col,
+        q=Q,
+        top_n=TOP_N_SEARCH,
+        use_boundary=USE_BOUNDARY,
+        use_within=USE_WITHIN,
+    )
+
+    temp_picks = pick_topk_valid_candidate_weeks(
+        cand_temp,
+        df_xlsx,
+        model_base,
+        ENCODER_LEN_WEEKS,
+        TOP_K,
+    )
+
+    summary["results"]["temp_top3"] = []
+    if not temp_picks:
+        print("[WARN] No valid TEMP shock weeks found.")
+    else:
+        for rank, item in enumerate(temp_picks, start=1):
+            w = item["week_idx"]
+            ts = item["week_start_ts"]
+            sidx = item["sample_index"]
+            metric = item["shock_metric"]
+
+            print(f"[TEMP TOP{rank}] week_idx={w}, week_start={ts}, sample_index={sidx}, metric={metric:.4f}")
+            png = plot_one_week(
+                df_xlsx=df_xlsx,
+                sample_index=sidx,
+                decoder_week_start_ts=ts,
+                tag=f"TEMP_SHOCK_rank{rank}_w{w}",
+                out_dir=out_dir,
+                meta=meta,
+                load_unit=LOAD_UNIT,
+                temp_unit=TEMP_UNIT,
+                model_base=model_base,
+                csv_path=csv_path_used,
+                xfmr=TARGET_XFMR,
+                xlsx_tag=xlsx_tag,
+                save_fig=SAVE_FIG,
+                show_fig=SHOW_FIG,
+            )
+
+            summary["results"]["temp_top3"].append({
+                "rank": rank,
+                "week_idx": int(w),
+                "week_start_ts": str(pd.to_datetime(ts)),
+                "sample_index": int(sidx),
+                "shock_metric": float(metric),
+                "png": os.path.basename(png) if png else None,
+            })
+
+    # --------------------------------------------------------
+    # (2) Load sudden change Top3
+    # --------------------------------------------------------
+    summary["results"]["load_top3"] = []
+
+    if load_col is not None:
+        cand_load = find_top_sudden_weeks_from_hourly(
+            hourly,
+            load_col,
+            q=Q,
+            top_n=TOP_N_SEARCH,
+            use_boundary=USE_BOUNDARY,
+            use_within=USE_WITHIN,
+        )
+
+        load_picks = pick_topk_valid_candidate_weeks(
+            cand_load,
+            df_xlsx,
+            model_base,
+            ENCODER_LEN_WEEKS,
+            TOP_K,
+        )
+
+        if not load_picks:
+            print("[WARN] No valid LOAD shock weeks found from CSV.")
+        else:
+            for rank, item in enumerate(load_picks, start=1):
+                w = item["week_idx"]
+                ts = item["week_start_ts"]
+                sidx = item["sample_index"]
+                metric = item["shock_metric"]
+
+                print(f"[LOAD TOP{rank}] week_idx={w}, week_start={ts}, sample_index={sidx}, metric={metric:.4f}")
+                png = plot_one_week(
+                    df_xlsx=df_xlsx,
+                    sample_index=sidx,
+                    decoder_week_start_ts=ts,
+                    tag=f"LOAD_SHOCK_rank{rank}_w{w}",
+                    out_dir=out_dir,
+                    meta=meta,
+                    load_unit=LOAD_UNIT,
+                    temp_unit=TEMP_UNIT,
+                    model_base=model_base,
+                    csv_path=csv_path_used,
+                    xfmr=TARGET_XFMR,
+                    xlsx_tag=xlsx_tag,
+                    save_fig=SAVE_FIG,
+                    show_fig=SHOW_FIG,
+                )
+
+                summary["results"]["load_top3"].append({
+                    "rank": rank,
+                    "week_idx": int(w),
+                    "week_start_ts": str(pd.to_datetime(ts)),
+                    "sample_index": int(sidx),
+                    "shock_metric": float(metric),
+                    "png": os.path.basename(png) if png else None,
+                })
+
+    else:
+        print("[INFO] CSV has no load column. Falling back to XLSX-based load shock...")
+        df_shock = compute_load_shock_from_xlsx(df_xlsx, meta, model_base)
+
+        if df_shock.empty:
+            print("[WARN] XLSX-based load shock list is empty.")
+        else:
+            cnt = 0
+            for i in range(min(len(df_shock), TOP_N_SEARCH)):
+                sidx = int(df_shock.loc[i, "sample_index"])
+                widx = int(sidx + ENCODER_LEN_WEEKS)
+
+                hit = week_start_map[week_start_map["week_idx"] == widx]
+                if hit.empty:
+                    continue
+
+                ts = pd.to_datetime(hit.iloc[0]["week_start_ts"])
+                metric = float(df_shock.loc[i, "dL_metric"])
+
+                cnt += 1
+                print(f"[LOAD TOP{cnt} (XLSX)] week_idx={widx}, week_start={ts}, sample_index={sidx}, metric={metric:.4f}")
+
+                png = plot_one_week(
+                    df_xlsx=df_xlsx,
+                    sample_index=sidx,
+                    decoder_week_start_ts=ts,
+                    tag=f"LOAD_SHOCK_rank{cnt}_XLSX_w{widx}",
+                    out_dir=out_dir,
+                    meta=meta,
+                    load_unit=LOAD_UNIT,
+                    temp_unit=TEMP_UNIT,
+                    model_base=model_base,
+                    csv_path=csv_path_used,
+                    xfmr=TARGET_XFMR,
+                    xlsx_tag=xlsx_tag,
+                    save_fig=SAVE_FIG,
+                    show_fig=SHOW_FIG,
+                )
+
+                summary["results"]["load_top3"].append({
+                    "rank": cnt,
+                    "week_idx": int(widx),
+                    "week_start_ts": str(pd.to_datetime(ts)),
+                    "sample_index": int(sidx),
+                    "shock_metric": float(metric),
+                    "png": os.path.basename(png) if png else None,
+                })
+
+                if cnt >= TOP_K:
+                    break
+
+    sum_path = os.path.join(out_dir, "selection_summary.json")
+    with open(sum_path, "w", encoding="utf-8") as f:
+        json.dump(summary, f, indent=2)
+
+    print(f"[✓] Saved summary: {sum_path}")
+    print("[DONE]")
+
+
+if __name__ == "__main__":
+    main()
