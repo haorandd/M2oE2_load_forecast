@@ -1,0 +1,1296 @@
+# ============================================================
+# MAIN TRAIN SCRIPT for model_v2.py
+#   - use model_v2.VariationalSeq2Seq_meta
+#   - 3 experts internally:
+#       1) thermal block = [temp, cdd, hdd, raw future 24h]
+#       2) workday
+#       3) season
+#   - raw external tensor is still 29-D
+#   - top_k = 2
+#   - num_layers = 4
+#   - warmup before saving best checkpoint
+#   - peak_warmup_epochs = 150
+# ============================================================
+
+import os
+import random
+import json
+import math
+
+import numpy as np
+import pandas as pd
+import torch
+import torch.nn as nn
+from torch.utils.data import DataLoader, TensorDataset
+from sklearn.preprocessing import MinMaxScaler
+from torch.distributions.normal import Normal
+from torch.optim import AdamW
+
+from data_utils_v2 import *
+from data_utils_v2 import reconstruct_sequence
+from model_v2 import VariationalSeq2Seq_meta
+from peak_metrics import peak_metrics_week, ercot_defaults
+
+
+# ============================================================
+# Common helpers
+# ============================================================
+
+def set_seed(seed: int = 42):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+
+
+def get_rng_state():
+    state = {
+        "python_random_state": random.getstate(),
+        "numpy_random_state": np.random.get_state(),
+        "torch_random_state": torch.get_rng_state(),
+    }
+    if torch.cuda.is_available():
+        state["torch_cuda_random_state_all"] = torch.cuda.get_rng_state_all()
+    return state
+
+
+def set_rng_state(state_dict):
+    if state_dict is None:
+        return
+    if "python_random_state" in state_dict:
+        random.setstate(state_dict["python_random_state"])
+    if "numpy_random_state" in state_dict:
+        np.random.set_state(state_dict["numpy_random_state"])
+    if "torch_random_state" in state_dict:
+        torch.set_rng_state(state_dict["torch_random_state"])
+    if torch.cuda.is_available() and "torch_cuda_random_state_all" in state_dict:
+        torch.cuda.set_rng_state_all(state_dict["torch_cuda_random_state_all"])
+
+
+def kl_loss(mu, logvar):
+    # standard VAE KL, averaged over batch
+    return -0.5 * torch.mean(torch.sum(1 + logvar - mu.pow(2) - logvar.exp(), dim=1))
+
+
+def gaussian_icdf(p, device):
+    return torch.sqrt(torch.tensor(2.0, device=device)) * torch.special.erfinv(
+        2 * torch.as_tensor(p, device=device) - 1
+    )
+
+
+def pinball_loss(y, yq, q):
+    e = y - yq
+    return torch.where(e >= 0, q * e, (q - 1) * e)
+
+
+def winkler_score(y, L, U, alpha):
+    width = (U - L)
+    below = (L - y).clamp(min=0.0)
+    above = (y - U).clamp(min=0.0)
+    return width + (2.0 / alpha) * (below + above)
+
+
+def crps_gaussian(mu, logvar, target):
+    std = (0.5 * logvar).exp()
+    z = (target - mu) / std
+    normal = Normal(torch.zeros_like(z), torch.ones_like(z))
+    phi = torch.exp(normal.log_prob(z))
+    Phi = normal.cdf(z)
+    crps = std * (z * (2 * Phi - 1) + 2 * phi - 1 / math.sqrt(math.pi))
+    return crps.mean()
+
+
+def make_loader(split_dict, batch_size, shuffle):
+    ds = TensorDataset(
+        split_dict['X_enc_l'],
+        split_dict['X_enc_ext'],
+        split_dict['X_dec_in_l'],
+        split_dict['X_dec_in_ext'],
+        split_dict['Y_dec_target'],
+    )
+    return DataLoader(ds, batch_size=batch_size, shuffle=shuffle, drop_last=False)
+
+
+# ============================================================
+# Temperature features
+# ============================================================
+
+def build_temp_response_features(
+    temp_f: np.ndarray,
+    cool_base: float = 72.0,
+    heat_base: float = 60.0,
+):
+    temp_f = np.asarray(temp_f, dtype=float)
+    cdd = np.maximum(temp_f - cool_base, 0.0)
+    hdd = np.maximum(heat_base - temp_f, 0.0)
+    return cdd, hdd
+
+
+def build_oracle_temp_raw_only_1d(temp_1d: np.ndarray, horizon: int):
+    """
+    For each time t:
+      raw future temp path = temp[t], temp[t+1], ..., temp[t+horizon-1]
+    Edge padding uses the last available value.
+    """
+    temp_1d = np.asarray(temp_1d, dtype=float).reshape(-1)
+    T = len(temp_1d)
+    if T == 0:
+        raise ValueError("temp_1d is empty.")
+    if horizon <= 0:
+        raise ValueError(f"horizon must be positive, got {horizon}.")
+
+    base_idx = np.arange(T)[:, None]
+    off_idx = np.arange(horizon)[None, :]
+    gather_idx = np.clip(base_idx + off_idx, 0, T - 1)
+    future_mat = temp_1d[gather_idx]  # [T, H]
+
+    out = {}
+    for h in range(horizon):
+        out[f"temp_fc_tplus{h:02d}"] = future_mat[:, h]
+    return out
+
+
+def build_oracle_temp_raw_only_weekly(temp_weekly: np.ndarray, horizon: int):
+    """
+    No 52-week grouping. No warning.
+    temp_weekly shape: [n_weeks, num_in_week]
+    """
+    temp_weekly = np.asarray(temp_weekly, dtype=float)
+    if temp_weekly.ndim != 2:
+        raise ValueError(
+            f"temp_weekly must be 2D [n_weeks, num_in_week], got shape={temp_weekly.shape}"
+        )
+    n_weeks, num_in_week = temp_weekly.shape
+    flat = temp_weekly.reshape(-1)
+    feat_flat = build_oracle_temp_raw_only_1d(flat, horizon=horizon)
+    return {k: np.asarray(v).reshape(n_weeks, num_in_week) for k, v in feat_flat.items()}
+
+
+# ============================================================
+# Seq2Seq processing
+# ============================================================
+
+def process_seq2seq_data(
+    feature_dict,
+    *,
+    train_ratio=0.7,
+    output_len=24,
+    encoder_len_weeks=1,
+    decoder_len_weeks=1,
+    num_in_week=168,
+    device=None,
+):
+    processed, scalers = {}, {}
+    for k, arr in feature_dict.items():
+        if arr.size == 0:
+            raise ValueError(f"feature '{k}' is empty.")
+        vec = np.asarray(arr, dtype=float).flatten()
+        sc = MinMaxScaler()
+        processed[k] = sc.fit_transform(vec.reshape(-1, 1)).flatten()
+        scalers[k] = sc
+
+    n_weeks = feature_dict['load'].shape[0]
+    need_weeks = encoder_len_weeks + decoder_len_weeks
+    if n_weeks < need_weeks:
+        raise ValueError(f"Need ≥{need_weeks} consecutive weeks, found {n_weeks}.")
+
+    enc_seq_len = encoder_len_weeks * num_in_week
+    dec_seq_len = decoder_len_weeks * num_in_week
+    L = dec_seq_len - output_len
+    if L <= 0:
+        raise ValueError("`output_len` must be smaller than decoder sequence length.")
+
+    ext_keys = [k for k in feature_dict.keys() if k != 'load']
+    K_ext = len(ext_keys)
+
+    X_enc_l, X_dec_in_l, Y_dec_target = [], [], []
+    X_enc_ext, X_dec_in_ext = [], []
+    last_start = n_weeks - need_weeks
+
+    for w in range(last_start + 1):
+        enc_start = w * num_in_week
+        enc_end = (w + encoder_len_weeks) * num_in_week
+        dec_start = enc_end
+        dec_end = dec_start + dec_seq_len
+
+        enc_l = processed['load'][enc_start:enc_end]
+        dec_full_l = processed['load'][dec_start:dec_end]
+
+        if K_ext > 0:
+            enc_ext = np.stack([processed[k][enc_start:enc_end] for k in ext_keys], axis=-1)
+            dec_ext = np.stack([processed[k][dec_start:dec_start + L] for k in ext_keys], axis=-1)
+        else:
+            enc_ext = np.empty((enc_seq_len, 0), dtype=np.float32)
+            dec_ext = np.empty((L, 0), dtype=np.float32)
+
+        targets = np.stack([dec_full_l[i:i + output_len] for i in range(L + 1)], axis=0)
+
+        X_enc_l.append(enc_l)
+        X_dec_in_l.append(dec_full_l[:L])
+        X_enc_ext.append(enc_ext)
+        X_dec_in_ext.append(dec_ext)
+        Y_dec_target.append(targets)
+
+    to_tensor = lambda a: torch.tensor(a, dtype=torch.float32).to(device)
+    data_tensors = {
+        'X_enc_l': to_tensor(np.array(X_enc_l)).unsqueeze(-1),
+        'X_enc_ext': to_tensor(np.array(X_enc_ext)),
+        'X_dec_in_l': to_tensor(np.array(X_dec_in_l)).unsqueeze(-1),
+        'X_dec_in_ext': to_tensor(np.array(X_dec_in_ext)),
+        'Y_dec_target': to_tensor(np.array(Y_dec_target)).unsqueeze(-1),
+    }
+
+    for k, v in data_tensors.items():
+        print(f"{k:15s} {tuple(v.shape)}")
+
+    B = data_tensors['X_enc_l'].shape[0]
+    split = int(train_ratio * B)
+    train_dict = {k: v[:split] for k, v in data_tensors.items()}
+    test_dict = {k: v[split:] for k, v in data_tensors.items()}
+    return train_dict, test_dict, scalers
+
+
+def process_seq2seq_data_using_scalers(
+    feature_dict,
+    *,
+    scalers,
+    train_ratio=0.7,
+    output_len=24,
+    encoder_len_weeks=1,
+    decoder_len_weeks=1,
+    num_in_week=168,
+    device=None,
+):
+    processed = {}
+    for k, arr in feature_dict.items():
+        if arr.size == 0:
+            raise ValueError(f"feature '{k}' is empty.")
+        vec = np.asarray(arr, dtype=float).flatten()
+        if k not in scalers:
+            raise KeyError(f"Missing scaler for key='{k}'. Keys={list(scalers.keys())}")
+        sc = scalers[k]
+        processed[k] = sc.transform(vec.reshape(-1, 1)).flatten()
+
+    n_weeks = feature_dict['load'].shape[0]
+    need_weeks = encoder_len_weeks + decoder_len_weeks
+    if n_weeks < need_weeks:
+        raise ValueError(f"Need ≥{need_weeks} consecutive weeks, found {n_weeks}.")
+
+    enc_seq_len = encoder_len_weeks * num_in_week
+    dec_seq_len = decoder_len_weeks * num_in_week
+    L = dec_seq_len - output_len
+    if L <= 0:
+        raise ValueError("`output_len` must be smaller than decoder sequence length.")
+
+    ext_keys = [k for k in feature_dict.keys() if k != 'load']
+    K_ext = len(ext_keys)
+
+    X_enc_l, X_dec_in_l, Y_dec_target = [], [], []
+    X_enc_ext, X_dec_in_ext = [], []
+    last_start = n_weeks - need_weeks
+
+    for w in range(last_start + 1):
+        enc_start = w * num_in_week
+        enc_end = (w + encoder_len_weeks) * num_in_week
+        dec_start = enc_end
+        dec_end = dec_start + dec_seq_len
+
+        enc_l = processed['load'][enc_start:enc_end]
+        dec_full_l = processed['load'][dec_start:dec_end]
+
+        if K_ext > 0:
+            enc_ext = np.stack([processed[k][enc_start:enc_end] for k in ext_keys], axis=-1)
+            dec_ext = np.stack([processed[k][dec_start:dec_start + L] for k in ext_keys], axis=-1)
+        else:
+            enc_ext = np.empty((enc_seq_len, 0), dtype=np.float32)
+            dec_ext = np.empty((L, 0), dtype=np.float32)
+
+        targets = np.stack([dec_full_l[i:i + output_len] for i in range(L + 1)], axis=0)
+
+        X_enc_l.append(enc_l)
+        X_dec_in_l.append(dec_full_l[:L])
+        X_enc_ext.append(enc_ext)
+        X_dec_in_ext.append(dec_ext)
+        Y_dec_target.append(targets)
+
+    to_tensor = lambda a: torch.tensor(a, dtype=torch.float32).to(device)
+    data_tensors = {
+        'X_enc_l': to_tensor(np.array(X_enc_l)).unsqueeze(-1),
+        'X_enc_ext': to_tensor(np.array(X_enc_ext)),
+        'X_dec_in_l': to_tensor(np.array(X_dec_in_l)).unsqueeze(-1),
+        'X_dec_in_ext': to_tensor(np.array(X_dec_in_ext)),
+        'Y_dec_target': to_tensor(np.array(Y_dec_target)).unsqueeze(-1),
+    }
+
+    B = data_tensors['X_enc_l'].shape[0]
+    split = int(train_ratio * B)
+    train_dict = {k: v[:split] for k, v in data_tensors.items()}
+    test_dict = {k: v[split:] for k, v in data_tensors.items()}
+    return train_dict, test_dict
+
+
+# ============================================================
+# Peak-oriented losses
+# ============================================================
+
+def soft_threshold_mask(y_true: torch.Tensor, thr_frac: float, tau: float):
+    B = y_true.size(0)
+    y_flat = y_true.reshape(B, -1)
+    y_max = y_flat.max(dim=1, keepdim=True).values
+    thr = thr_frac * y_max
+    thr = thr.view(B, 1, 1)
+    w = torch.sigmoid((y_true - thr) / (tau + 1e-12))
+    return w, thr
+
+
+def gaussian_nll_pointwise(mu, logvar, y, logvar_min=-10.0, logvar_max=5.0):
+    logvar = logvar.clamp(min=logvar_min, max=logvar_max)
+    var = logvar.exp()
+    log2pi = math.log(2.0 * math.pi)
+    nll = 0.5 * (logvar + log2pi + (y - mu) ** 2 / (var + 1e-12))
+    return nll, logvar
+
+
+def softargmax_time(y, temp: float):
+    B, T = y.shape
+    idx = torch.arange(T, device=y.device, dtype=y.dtype).view(1, T)
+    p = torch.softmax(y / (temp + 1e-12), dim=1)
+    t = (p * idx).sum(dim=1)
+    return t
+
+
+def peak_amplitude_loss(mu, y, load_scale: float = 1.0):
+    B = y.size(0)
+    mu_flat = mu.reshape(B, -1)
+    y_flat = y.reshape(B, -1)
+
+    mu_peak = mu_flat.max(dim=1).values
+    y_peak = y_flat.max(dim=1).values
+    return ((mu_peak - y_peak) ** 2).mean() * (load_scale ** 2)
+
+
+def topk_peak_loss(mu, y, k: int = 8, load_scale: float = 1.0):
+    B = y.size(0)
+    mu_flat = mu.reshape(B, -1)
+    y_flat = y.reshape(B, -1)
+
+    k = min(k, mu_flat.size(1))
+    mu_topk = torch.topk(mu_flat, k=k, dim=1).values
+    y_topk = torch.topk(y_flat, k=k, dim=1).values
+    return ((mu_topk - y_topk) ** 2).mean() * (load_scale ** 2)
+
+
+def v7_peak_fidelity_loss(
+    mu_preds: torch.Tensor,
+    logvar_preds: torch.Tensor,
+    tgt: torch.Tensor,
+    *,
+    thr_frac: float = 0.90,
+    tau: float = 0.03,
+    q_upper: float = 0.95,
+    softarg_temp: float = 0.05,
+    lam_thr: float = 3.0,
+    lam_q: float = 1.0,
+    lam_time: float = 0.1,
+    lam_amp: float = 0.2,
+    lam_topk: float = 0.1,
+    load_scale: float = 1.0,
+    logvar_min: float = -10.0,
+    logvar_max: float = 5.0,
+    topk_k: int = 8,
+    return_parts: bool = False,
+):
+    mu = mu_preds.squeeze(-1)
+    y = tgt.squeeze(-1)
+    logv = logvar_preds.squeeze(-1)
+
+    nll, logv_clamped = gaussian_nll_pointwise(mu, logv, y, logvar_min, logvar_max)
+    sigma = (0.5 * logv_clamped).exp()
+
+    w_peak, _ = soft_threshold_mask(y, thr_frac=thr_frac, tau=tau)
+
+    err2 = (mu - y).pow(2)
+    L_thr = (w_peak * err2).sum() / (w_peak.sum() + 1e-12)
+
+    zq = gaussian_icdf(q_upper, device=mu.device)
+    yq = mu + zq * sigma
+    pl = pinball_loss(y, yq, q_upper)
+    L_q = (w_peak * pl).sum() / (w_peak.sum() + 1e-12)
+
+    L_thr = L_thr * (load_scale ** 2)
+    L_q = L_q * load_scale
+
+    B = y.size(0)
+    y_flat = y.reshape(B, -1)
+    mu_flat = mu.reshape(B, -1)
+    t_true = softargmax_time(y_flat, temp=softarg_temp)
+    t_pred = softargmax_time(mu_flat, temp=softarg_temp)
+    T = y_flat.size(1)
+    L_time = (t_pred - t_true).abs().mean() / (T + 1e-12)
+
+    L_amp = peak_amplitude_loss(mu, y, load_scale=load_scale)
+    L_topk = topk_peak_loss(mu, y, k=topk_k, load_scale=load_scale)
+
+    nll_mean = nll.mean()
+    loss = (
+        nll_mean
+        + lam_thr * L_thr
+        + lam_q * L_q
+        + lam_time * L_time
+        + lam_amp * L_amp
+        + lam_topk * L_topk
+    )
+
+    if return_parts:
+        parts = {
+            "nll": float(nll_mean.detach().cpu()),
+            "thr": float(L_thr.detach().cpu()),
+            "q": float(L_q.detach().cpu()),
+            "time": float(L_time.detach().cpu()),
+            "amp": float(L_amp.detach().cpu()),
+            "topk": float(L_topk.detach().cpu()),
+        }
+        return loss, parts
+
+    return loss
+
+
+# ============================================================
+# Checkpoint helpers
+# ============================================================
+
+def save_full_checkpoint(
+    save_path_full: str,
+    model: nn.Module,
+    optimizer: torch.optim.Optimizer,
+    epoch: int,
+    best_train: float,
+    best_epoch: int,
+):
+    ckpt = {
+        "epoch": epoch,
+        "model_state_dict": model.state_dict(),
+        "optimizer_state_dict": optimizer.state_dict(),
+        "best_train": best_train,
+        "best_epoch": best_epoch,
+        "rng_state": get_rng_state(),
+    }
+    torch.save(ckpt, save_path_full)
+
+
+def save_weights_only(save_path_weights: str, model: nn.Module):
+    torch.save(model.state_dict(), save_path_weights)
+
+
+def load_model_flexible(
+    path: str,
+    model: nn.Module,
+    optimizer: torch.optim.Optimizer = None,
+    device: torch.device = None,
+):
+    obj = torch.load(path, map_location=device)
+
+    if isinstance(obj, dict) and "model_state_dict" in obj:
+        model.load_state_dict(obj["model_state_dict"], strict=True)
+        if optimizer is not None and "optimizer_state_dict" in obj:
+            optimizer.load_state_dict(obj["optimizer_state_dict"])
+        if "rng_state" in obj:
+            set_rng_state(obj["rng_state"])
+        return {
+            "is_full_ckpt": True,
+            "epoch": int(obj.get("epoch", 0)),
+            "best_train": float(obj.get("best_train", float("inf"))),
+            "best_epoch": int(obj.get("best_epoch", -1)),
+        }
+
+    model.load_state_dict(obj, strict=True)
+    return {
+        "is_full_ckpt": False,
+        "epoch": None,
+        "best_train": None,
+        "best_epoch": None,
+    }
+
+
+# ============================================================
+# Train
+# ============================================================
+
+def train_model_v2(
+    model,
+    train_loader,
+    total_epochs,
+    lr,
+    device,
+    top_k=2,
+    kl_weight=0.001,
+    warmup_epochs=10,
+    save_path_weights_best="best_model_weights.pt",
+    save_path_full_best="best_model_full_best.pt",
+    save_path_full_latest="latest_model_full.pt",
+    optimizer=None,
+    thr_frac: float = 0.90,
+    tau: float = 0.03,
+    q_upper: float = 0.95,
+    softarg_temp: float = 0.05,
+    lam_thr: float = 0.05,
+    lam_q: float = 0.04,
+    lam_time: float = 0.01,
+    lam_amp: float = 0.03,
+    lam_topk: float = 0.01,
+    load_scale: float = 1.0,
+    peak_warmup_epochs: int = 150,
+    grad_clip_norm: float = 1.0,
+    logvar_min: float = -10.0,
+    logvar_max: float = 5.0,
+    topk_k: int = 8,
+    start_epoch: int = 1,
+    best_train_init: float = float("inf"),
+    best_epoch_init: int = -1,
+):
+    if optimizer is None:
+        optimizer = AdamW(model.parameters(), lr=lr, weight_decay=1e-4)
+
+    best_train = best_train_init
+    best_epoch = best_epoch_init
+
+    if start_epoch > total_epochs:
+        print(f"[INFO] start_epoch={start_epoch} > total_epochs={total_epochs}. Nothing to train.")
+        return model
+
+    for ep in range(start_epoch, total_epochs + 1):
+        model.train()
+        running = 0.0
+        skipped = 0
+        sum_parts = {
+            "nll": 0.0, "thr": 0.0, "q": 0.0, "time": 0.0,
+            "amp": 0.0, "topk": 0.0, "kl": 0.0
+        }
+        cnt_parts = 0
+
+        w_peak = 1.0 if (peak_warmup_epochs is None or peak_warmup_epochs <= 0) else min(1.0, ep / float(peak_warmup_epochs))
+        lam_thr_ep = lam_thr * w_peak
+        lam_q_ep = lam_q * w_peak
+        lam_time_ep = lam_time * w_peak
+        lam_amp_ep = lam_amp * w_peak
+        lam_topk_ep = lam_topk * w_peak
+
+        for (enc_l, enc_ext, dec_l, dec_ext, tgt) in train_loader:
+            enc_l, enc_ext, dec_l, dec_ext, tgt = (
+                enc_l.to(device),
+                enc_ext.to(device),
+                dec_l.to(device),
+                dec_ext.to(device),
+                tgt.to(device),
+            )
+
+            optimizer.zero_grad()
+
+            mu_preds, logvar_preds, mu_z, logvar_z = model(
+                enc_l, enc_ext, dec_l, dec_ext,
+                epoch=ep, top_k=top_k, warmup_epochs=warmup_epochs
+            )
+
+            loss_main, parts = v7_peak_fidelity_loss(
+                mu_preds, logvar_preds, tgt,
+                thr_frac=thr_frac,
+                tau=tau,
+                q_upper=q_upper,
+                softarg_temp=softarg_temp,
+                lam_thr=lam_thr_ep,
+                lam_q=lam_q_ep,
+                lam_time=lam_time_ep,
+                lam_amp=lam_amp_ep,
+                lam_topk=lam_topk_ep,
+                load_scale=load_scale,
+                logvar_min=logvar_min,
+                logvar_max=logvar_max,
+                topk_k=topk_k,
+                return_parts=True,
+            )
+
+            if not torch.isfinite(loss_main):
+                skipped += 1
+                continue
+
+            if kl_weight is not None and kl_weight > 0:
+                kl = kl_loss(mu_z, logvar_z)
+            else:
+                kl = torch.zeros((), device=device)
+
+            loss = loss_main + kl_weight * kl
+            if not torch.isfinite(loss):
+                skipped += 1
+                continue
+
+            sum_parts["nll"] += parts["nll"]
+            sum_parts["thr"] += parts["thr"]
+            sum_parts["q"] += parts["q"]
+            sum_parts["time"] += parts["time"]
+            sum_parts["amp"] += parts["amp"]
+            sum_parts["topk"] += parts["topk"]
+            sum_parts["kl"] += float(kl.detach().cpu())
+            cnt_parts += 1
+
+            loss.backward()
+            if grad_clip_norm and grad_clip_norm > 0:
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=grad_clip_norm)
+            optimizer.step()
+
+            running += loss.item() * enc_l.size(0)
+
+        denom = max(1, (len(train_loader.dataset) - skipped * train_loader.batch_size))
+        avg = running / denom
+
+        # latest for resume
+        save_full_checkpoint(save_path_full_latest, model, optimizer, ep, best_train, best_epoch)
+
+        # IMPORTANT: do not save best before warm-up finishes
+        can_update_best = (ep >= peak_warmup_epochs)
+        if can_update_best and avg < best_train:
+            best_train = avg
+            best_epoch = ep
+            save_weights_only(save_path_weights_best, model)
+            save_full_checkpoint(save_path_full_best, model, optimizer, ep, best_train, best_epoch)
+            print(f"✅ [BASE v2] Saved best model at epoch {ep} | loss {best_train:.6f}")
+
+        if ep == start_epoch or ep % 5 == 0 or ep == total_epochs:
+            best_str = f"{best_train:.6f} (ep {best_epoch})" if best_epoch >= 0 else "N/A (warm-up phase)"
+            print(
+                f"[BASE v2] Epoch {ep:3d}/{total_epochs} | "
+                f"train loss: {avg:.6f} | best: {best_str} | "
+                f"lam_thr={lam_thr_ep:.3f} lam_q={lam_q_ep:.3f} "
+                f"lam_time={lam_time_ep:.3f} lam_amp={lam_amp_ep:.3f} "
+                f"lam_topk={lam_topk_ep:.3f} | skipped={skipped}"
+            )
+            if cnt_parts > 0:
+                avg_nll = sum_parts["nll"] / cnt_parts
+                avg_thr = sum_parts["thr"] / cnt_parts
+                avg_q = sum_parts["q"] / cnt_parts
+                avg_time = sum_parts["time"] / cnt_parts
+                avg_amp = sum_parts["amp"] / cnt_parts
+                avg_topk = sum_parts["topk"] / cnt_parts
+                avg_kl = sum_parts["kl"] / cnt_parts
+                print(
+                    f"[PARTS] nll={avg_nll:.4f} thr={avg_thr:.4f} q={avg_q:.4f} "
+                    f"time={avg_time:.4f} amp={avg_amp:.4f} topk={avg_topk:.4f} kl={avg_kl:.4f} | weighted: "
+                    f"+{lam_thr_ep * avg_thr:.4f} +{lam_q_ep * avg_q:.4f} "
+                    f"+{lam_time_ep * avg_time:.4f} +{lam_amp_ep * avg_amp:.4f} "
+                    f"+{lam_topk_ep * avg_topk:.4f} +{kl_weight * avg_kl:.4f}"
+                )
+
+    print(f"\n🏁 [BASE v2] Done. Best epoch {best_epoch} | loss {best_train:.6f}")
+    return model
+
+
+# ============================================================
+# Peak eval helper
+# ============================================================
+
+@torch.no_grad()
+def _evaluate_peak_batch(preds_4d, tgts_4d):
+    B, Lp1, out_len, _ = preds_4d.shape
+    reports = []
+
+    for b in range(B):
+        pred_week = reconstruct_sequence(preds_4d[b, :, :, 0])
+        true_week = reconstruct_sequence(tgts_4d[b, :, :, 0])
+
+        T = min(int(pred_week.shape[0]), int(true_week.shape[0]))
+        pred_week = pred_week[:T]
+        true_week = true_week[:T]
+
+        points_per_day = max(T // 7, 1)
+        dt_min = int(round(1440 / points_per_day))
+        cfg = ercot_defaults(dt_min=dt_min)
+
+        rep = peak_metrics_week(
+            y_true_week=true_week.detach().cpu().numpy() if torch.is_tensor(true_week) else np.asarray(true_week),
+            y_pred_week=pred_week.detach().cpu().numpy() if torch.is_tensor(pred_week) else np.asarray(pred_week),
+            points_per_day=points_per_day,
+            **cfg,
+        )
+        reports.append(rep)
+
+    def _mean_over_batch(key, where="summary"):
+        vals = []
+        for r in reports:
+            v = r.get(where, {}).get(key, float("nan"))
+            if not (isinstance(v, float) and np.isnan(v)):
+                vals.append(v)
+        return float(np.mean(vals)) if len(vals) else float("nan")
+
+    pmse_union_mean = _mean_over_batch("ThrPeakMSE_union_mean")
+    log = {
+        "PVPE_mean": _mean_over_batch("PVPE_mean"),
+        "PTE_min_mean": _mean_over_batch("PTE_min_mean"),
+        "PeakWindowIoU_mean": _mean_over_batch("PeakWindowIoU_mean"),
+        "ThrWindowIoU_mean": _mean_over_batch("ThrWindowIoU_mean"),
+        "PeakPeriodMSE_thr_mean": pmse_union_mean,
+    }
+    return log, reports
+
+
+# ============================================================
+# Evaluation
+# ============================================================
+
+@torch.no_grad()
+def evaluate_model(
+    model,
+    test_loader,
+    loss_fn,
+    device,
+    data_name=None,
+    model_name=None,
+    quantiles=(0.1, 0.5, 0.9),
+    alpha=0.1,
+    data_export_list=None,
+):
+    print(f"--- Evaluating model '{model_name}' on data '{data_name}' ---")
+    model.to(device)
+    model.eval()
+
+    running_mse = 0.0
+    running_nll = 0.0
+    running_crps = 0.0
+    running_qpin = 0.0
+    running_wink = 0.0
+
+    peak_sum = {
+        "PVPE_mean": 0.0,
+        "PTE_min_mean": 0.0,
+        "PeakWindowIoU_mean": 0.0,
+        "ThrWindowIoU_mean": 0.0,
+        "PeakPeriodMSE_thr_mean": 0.0,
+    }
+    peak_count = 0
+
+    for batch_id, batch in enumerate(test_loader):
+        enc_l, enc_ext, dec_l, dec_ext, tgt = [t.to(device) for t in batch]
+        B = enc_l.size(0)
+
+        mu_preds, logvar_preds, _, _ = model(enc_l, enc_ext, dec_l, dec_ext)
+        mu4d = mu_preds
+        tgt4d = tgt
+
+        mu_preds = mu_preds.squeeze(-1)
+        logvar_preds = logvar_preds.squeeze(-1)
+        tgt = tgt.squeeze(-1)
+
+        peak_log, _ = _evaluate_peak_batch(mu4d, tgt4d)
+        for k in peak_sum:
+            v = peak_log.get(k, float("nan"))
+            if not (isinstance(v, float) and np.isnan(v)):
+                peak_sum[k] += float(v)
+        peak_count += 1
+
+        mu_first = mu_preds[:, :, 0]
+        logvar_first = logvar_preds[:, :, 0]
+        tgt_first = tgt[:, :, 0]
+        sigma_first = logvar_first.exp().sqrt()
+
+        running_mse += loss_fn(mu_first, tgt_first).item() * B
+
+        nll = 0.5 * (
+            logvar_first
+            + torch.log(torch.tensor(2 * np.pi, device=logvar_first.device))
+            + (tgt_first - mu_first) ** 2 / (logvar_first.exp() + 1e-12)
+        )
+        running_nll += nll.sum().item()
+
+        crps = crps_gaussian(mu_first, logvar_first, tgt_first)
+        running_crps += crps.item() * B
+
+        q_losses = []
+        for q in quantiles:
+            zq = gaussian_icdf(q, device=mu_first.device)
+            yq = mu_first + sigma_first * zq
+            ql = pinball_loss(tgt_first, yq, q).mean()
+            q_losses.append(ql)
+        qpin_mean = torch.stack(q_losses).mean()
+        running_qpin += qpin_mean.item() * B
+
+        z = gaussian_icdf(1.0 - alpha / 2.0, device=mu_first.device)
+        Lb = mu_first - z * sigma_first
+        Ub = mu_first + z * sigma_first
+        ws = winkler_score(tgt_first, Lb, Ub, alpha).mean()
+        running_wink += ws.item() * B
+
+        if data_export_list is not None and model_name is not None:
+            for i in range(B):
+                hist_i = enc_l[i].detach().cpu().squeeze(-1)
+                mu_i = mu_first[i].detach().cpu()
+                y_true_i = tgt_first[i].detach().cpu()
+                std_i = sigma_first[i].detach().cpu()
+
+                Lh = len(hist_i)
+                H = len(mu_i)
+                x_hist = np.arange(Lh)
+                x_fore = np.arange(Lh, Lh + H)
+
+                df_hist = pd.DataFrame({'time_step': x_hist, 'value': hist_i.numpy(), 'value_type': 'history'})
+                df_true = pd.DataFrame({'time_step': x_fore, 'value': y_true_i.numpy(), 'value_type': 'true'})
+                df_pred = pd.DataFrame({'time_step': x_fore, 'value': mu_i.numpy(), 'value_type': 'pred_mean'})
+                df_std = pd.DataFrame({'time_step': x_fore, 'value': std_i.numpy(), 'value_type': 'pred_std'})
+                df_sample = pd.concat([df_hist, df_true, df_pred, df_std], ignore_index=True)
+                df_sample['model_name'] = model_name
+                df_sample['sample_index'] = i + batch_id * test_loader.batch_size
+                data_export_list.append(df_sample)
+
+    test_mse = running_mse / len(test_loader.dataset)
+    horizon = mu_first.size(1)
+    test_nll = running_nll / (len(test_loader.dataset) * horizon)
+    test_crps = running_crps / len(test_loader.dataset)
+    test_qpin = running_qpin / len(test_loader.dataset)
+    test_wink = running_wink / len(test_loader.dataset)
+
+    print(f"\n🧪 Test MSE         : {test_mse:.6f}")
+    print(f"🧪 Test CRPS        : {test_crps:.6f}")
+    print(f"🧪 Test QuantileLoss: {test_qpin:.6f}  (avg over q={list(quantiles)})")
+    print(f"🧪 Test WinklerScore: {test_wink:.6f}  (alpha={alpha}, {(1 - alpha) * 100:.0f}% PI)")
+    if peak_count > 0:
+        for k in peak_sum:
+            peak_sum[k] /= peak_count
+        pmse_thr = peak_sum.get("PeakPeriodMSE_thr_mean", float("nan"))
+        print(
+            f"[PEAK] PVPE_mean={peak_sum['PVPE_mean']:.4f}  "
+            f"PTE_min_mean={peak_sum['PTE_min_mean']:.1f} min  "
+            f"IoU(maxwin)={peak_sum['PeakWindowIoU_mean']:.3f}  "
+            f"IoU(thr)={peak_sum['ThrWindowIoU_mean']:.3f}  "
+            f"PMSE_thr={pmse_thr:.6f}"
+        )
+    print("---------------------------------------------------\n")
+
+    return test_mse, test_nll, test_crps, test_qpin, test_wink
+
+
+# ============================================================
+# MAIN
+# ============================================================
+
+if __name__ == "__main__":
+    seed = 42
+    set_seed(seed)
+
+    # ------------------ switches ------------------
+    EVAL_XFMR = "id" #change to the set u wanna to evaluate
+
+    RESUME_IF_AVAILABLE = False
+    TOTAL_EPOCHS = 1000
+    WEIGHTS_ONLY_FINETUNE_EPOCHS = 200
+
+    batch_size = 16
+    lr = 1e-3
+    resume_lr = 1e-4
+    KL_BASE_WEIGHT = 0.001
+
+    # Peak loss settings
+    V2_THR_FRAC = 0.85
+    V2_TAU = 0.05
+    V2_Q_UPPER = 0.90
+    V2_SOFTARG_T = 0.12
+
+    V2_LAM_THR = 0.05
+    V2_LAM_Q = 0.04
+    V2_LAM_TIME = 0.01
+    V2_LAM_AMP = 0.03
+    V2_LAM_TOPK = 0.01
+    V2_TOPK_PEAK_K = 8
+    V2_PEAK_WARM = 150
+
+    # Temperature response bases
+    COOL_BASE_F = 72.0
+    HEAT_BASE_F = 60.0
+
+    # Model dims
+    xprime_dim = 40
+    hidden_dim = 64
+    latent_dim = 32
+    num_layers = 4
+    output_len = 24
+    encoder_len_weeks = 1
+    decoder_len_weeks = 1
+    input_dim = 1
+    output_dim = 1
+
+    top_k = 2
+    warmup_ep = 10
+    TEMP_FC_HORIZON = output_len
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"Using device: {device}")
+
+    # ---------- Naming ----------
+    TAG = f"v2_blockExpert3_raw{TEMP_FC_HORIZON}h_topk2_peakWarm150"
+    data_name = "Oncor_load"
+    model_name = f"M2OE2_v1_temp_{output_len}h_Enc{encoder_len_weeks}w"
+
+    CKPT_WEIGHTS_BEST = f"{data_name}_{model_name}_{TAG}_best_weights.pt"
+    CKPT_FULL_BEST = f"{data_name}_{model_name}_{TAG}_best_full.pt"
+    CKPT_FULL_LATEST = f"{data_name}_{model_name}_{TAG}_latest_full.pt"
+
+    SCALER_META_JSON = f"vae_base_scaler_meta_{TAG}.json"
+    TRAIN_CFG_JSON = f"train_config_{TAG}.json"
+    XLSX_EXPORT_PATH = f"vae_base_only_{TAG}_XFMR{EVAL_XFMR}.xlsx"
+
+    print(f"[INFO] CKPT_WEIGHTS_BEST: {CKPT_WEIGHTS_BEST}")
+    print(f"[INFO] CKPT_FULL_BEST   : {CKPT_FULL_BEST}")
+    print(f"[INFO] CKPT_FULL_LATEST : {CKPT_FULL_LATEST}")
+    print(f"[INFO] SCALER_META_JSON : {SCALER_META_JSON}")
+    print(f"[INFO] TRAIN_CFG_JSON   : {TRAIN_CFG_JSON}")
+    print(f"[INFO] XLSX_EXPORT_PATH : {XLSX_EXPORT_PATH}")
+
+    # ============================================================
+    # 0) Load ALL data, build features, fit scalers once
+    # ============================================================
+    times, load, temp, workday, season = get_data_oncor_load_weekly(XFMR="all")
+    print("[TRAIN] load shape (all XFMR):", load.shape)
+    print("[TRAIN] temp shape (all XFMR):", temp.shape)
+
+    cdd, hdd = build_temp_response_features(
+        temp,
+        cool_base=COOL_BASE_F,
+        heat_base=HEAT_BASE_F,
+    )
+
+    oracle_temp_raw_all = build_oracle_temp_raw_only_weekly(
+        temp_weekly=temp,
+        horizon=TEMP_FC_HORIZON,
+    )
+
+    feature_dict_all = {
+        "load": load,
+        "temp": temp,
+        "workday": workday,
+        "season": season,
+        "cdd": cdd,
+        "hdd": hdd,
+        **oracle_temp_raw_all,
+    }
+
+    ext_keys = [k for k in feature_dict_all.keys() if k != "load"]
+    ext_idx_map = {k: i for i, k in enumerate(ext_keys)}
+    print(f"[INFO] ext_keys ({len(ext_keys)}): {ext_keys}")
+    print(f"[INFO] ext_idx_map: {ext_idx_map}")
+
+    thermal_feature_names = ["temp", "cdd", "hdd"] + [f"temp_fc_tplus{h:02d}" for h in range(TEMP_FC_HORIZON)]
+    workday_feature_name = "workday"
+    season_feature_name = "season"
+
+    thermal_indices = [ext_idx_map[k] for k in thermal_feature_names]
+    workday_index = ext_idx_map[workday_feature_name]
+    season_index = ext_idx_map[season_feature_name]
+
+    print(f"[INFO] thermal_indices ({len(thermal_indices)} dims): {thermal_indices}")
+    print(f"[INFO] workday_index: {workday_index}")
+    print(f"[INFO] season_index : {season_index}")
+
+    train_data_all, test_data_all, scalers = process_seq2seq_data(
+        feature_dict=feature_dict_all,
+        train_ratio=0.7,
+        output_len=output_len,
+        encoder_len_weeks=encoder_len_weeks,
+        decoder_len_weeks=decoder_len_weeks,
+        device=device,
+    )
+
+    scaler_meta = {}
+    for k, sc in scalers.items():
+        scaler_meta[f"{k}_min"] = float(sc.data_min_[0])
+        scaler_meta[f"{k}_max"] = float(sc.data_max_[0])
+    with open(SCALER_META_JSON, "w", encoding="utf-8") as f:
+        json.dump(scaler_meta, f, indent=2)
+    print(f"[INFO] Saved scaler meta to {SCALER_META_JSON}")
+
+    sc_load = scalers["load"]
+    load_scale = float(sc_load.data_max_[0] - sc_load.data_min_[0])
+    print(f"[INFO] load_scale (kW) = {load_scale:.6f}")
+
+    n_externals = train_data_all["X_enc_ext"].shape[-1]
+    print(f"[INFO] K_ext (raw external dim) = {n_externals}")
+
+    train_loader_all = make_loader(train_data_all, batch_size=batch_size, shuffle=True)
+
+    # Save training config
+    train_cfg = dict(
+        TAG=TAG,
+        seed=seed,
+        data_name=data_name,
+        model_name=model_name,
+        EVAL_XFMR=EVAL_XFMR,
+        batch_size=batch_size,
+        TOTAL_EPOCHS=TOTAL_EPOCHS,
+        lr=lr,
+        resume_lr=resume_lr,
+        KL_BASE_WEIGHT=KL_BASE_WEIGHT,
+        temp_bases_F=dict(
+            cool_base=COOL_BASE_F,
+            heat_base=HEAT_BASE_F,
+        ),
+        architecture="model_v2.VariationalSeq2Seq_meta",
+        experts=dict(
+            thermal_feature_names=thermal_feature_names,
+            workday_feature_name=workday_feature_name,
+            season_feature_name=season_feature_name,
+            top_k=top_k,
+        ),
+        peak_loss=dict(
+            thr_frac=V2_THR_FRAC,
+            tau=V2_TAU,
+            q_upper=V2_Q_UPPER,
+            softarg_temp=V2_SOFTARG_T,
+            lam_thr=V2_LAM_THR,
+            lam_q=V2_LAM_Q,
+            lam_time=V2_LAM_TIME,
+            lam_amp=V2_LAM_AMP,
+            lam_topk=V2_LAM_TOPK,
+            topk_peak_k=V2_TOPK_PEAK_K,
+            peak_warmup_epochs=V2_PEAK_WARM,
+        ),
+        model_dims=dict(
+            xprime_dim=xprime_dim,
+            hidden_dim=hidden_dim,
+            latent_dim=latent_dim,
+            num_layers=num_layers,
+            output_len=output_len,
+            encoder_len_weeks=encoder_len_weeks,
+            decoder_len_weeks=decoder_len_weeks,
+            input_dim=input_dim,
+            output_dim=output_dim,
+            n_externals=n_externals,
+            warmup_ep=warmup_ep,
+        ),
+        feature_keys=list(feature_dict_all.keys()),
+        ext_keys=ext_keys,
+        ext_idx_map=ext_idx_map,
+    )
+    with open(TRAIN_CFG_JSON, "w", encoding="utf-8") as f:
+        json.dump(train_cfg, f, indent=2)
+    print(f"[INFO] Saved training config to {TRAIN_CFG_JSON}")
+
+    # ============================================================
+    # 1) Build XFMR-specific eval dataset using SAME scalers
+    # ============================================================
+    print(f"[XFMR] Building eval dataset for XFMR={EVAL_XFMR} using BASE scalers...")
+
+    times_e, load_e, temp_e, workday_e, season_e = get_data_oncor_load_weekly(XFMR=EVAL_XFMR)
+
+    cdd_e, hdd_e = build_temp_response_features(
+        temp_e,
+        cool_base=COOL_BASE_F,
+        heat_base=HEAT_BASE_F,
+    )
+
+    oracle_temp_raw_eval = build_oracle_temp_raw_only_weekly(
+        temp_weekly=temp_e,
+        horizon=TEMP_FC_HORIZON,
+    )
+
+    feature_dict_xfmr = {
+        "load": load_e,
+        "temp": temp_e,
+        "workday": workday_e,
+        "season": season_e,
+        "cdd": cdd_e,
+        "hdd": hdd_e,
+        **oracle_temp_raw_eval,
+    }
+
+    _, test_data_eval_all = process_seq2seq_data_using_scalers(
+        feature_dict=feature_dict_xfmr,
+        scalers=scalers,
+        train_ratio=0.0,
+        output_len=output_len,
+        encoder_len_weeks=encoder_len_weeks,
+        decoder_len_weeks=decoder_len_weeks,
+        device=device,
+    )
+    test_loader_eval = make_loader(test_data_eval_all, batch_size=batch_size, shuffle=False)
+
+    plot_data_frames = []
+
+    # ============================================================
+    # 2) Train / Resume
+    # ============================================================
+    model_base_train = VariationalSeq2Seq_meta(
+        xprime_dim=xprime_dim,
+        input_dim=input_dim,
+        hidden_size=hidden_dim,
+        latent_size=latent_dim,
+        output_len=output_len,
+        n_externals=n_externals,
+        output_dim=output_dim,
+        num_layers=num_layers,
+        dropout=0.1,
+        thermal_indices=thermal_indices,
+        workday_index=workday_index,
+        season_index=season_index,
+    ).to(device)
+
+    start_epoch = 1
+    best_train_init = float("inf")
+    best_epoch_init = -1
+    current_lr = lr
+    current_peak_warm = V2_PEAK_WARM
+
+    optimizer_base = AdamW(model_base_train.parameters(), lr=current_lr, weight_decay=1e-4)
+    did_resume = False
+
+    if RESUME_IF_AVAILABLE and os.path.exists(CKPT_FULL_LATEST):
+        print(f"[RESUME] Found latest full checkpoint: {CKPT_FULL_LATEST}")
+        info = load_model_flexible(
+            CKPT_FULL_LATEST,
+            model=model_base_train,
+            optimizer=optimizer_base,
+            device=device,
+        )
+        start_epoch = info["epoch"] + 1
+        best_train_init = info["best_train"]
+        best_epoch_init = info["best_epoch"]
+        current_lr = resume_lr
+        for g in optimizer_base.param_groups:
+            g["lr"] = current_lr
+        current_peak_warm = V2_PEAK_WARM
+        did_resume = True
+        print(
+            f"[RESUME] Full latest resume from epoch={info['epoch']} | "
+            f"next start_epoch={start_epoch} | best={best_train_init} "
+            f"(ep {best_epoch_init}) | lr={current_lr}"
+        )
+
+    elif RESUME_IF_AVAILABLE and os.path.exists(CKPT_FULL_BEST):
+        print(f"[RESUME] Found best full checkpoint: {CKPT_FULL_BEST}")
+        info = load_model_flexible(
+            CKPT_FULL_BEST,
+            model=model_base_train,
+            optimizer=optimizer_base,
+            device=device,
+        )
+        start_epoch = info["epoch"] + 1
+        best_train_init = info["best_train"]
+        best_epoch_init = info["best_epoch"]
+        current_lr = resume_lr
+        for g in optimizer_base.param_groups:
+            g["lr"] = current_lr
+        current_peak_warm = V2_PEAK_WARM
+        did_resume = True
+        print(
+            f"[RESUME] Full best resume from epoch={info['epoch']} | "
+            f"next start_epoch={start_epoch} | best={best_train_init} "
+            f"(ep {best_epoch_init}) | lr={current_lr}"
+        )
+
+    elif RESUME_IF_AVAILABLE and os.path.exists(CKPT_WEIGHTS_BEST):
+        print(f"[RESUME] Found weights-only checkpoint: {CKPT_WEIGHTS_BEST}")
+        _ = load_model_flexible(
+            CKPT_WEIGHTS_BEST,
+            model=model_base_train,
+            optimizer=None,
+            device=device,
+        )
+        start_epoch = 1
+        best_train_init = float("inf")
+        best_epoch_init = -1
+        current_lr = resume_lr
+        optimizer_base = AdamW(model_base_train.parameters(), lr=current_lr, weight_decay=1e-4)
+        current_peak_warm = 0
+        did_resume = True
+        print(
+            "[RESUME] Loaded weights-only ckpt. "
+            "This is fine-tune fallback, not exact resume.\n"
+            f"[RESUME] start_epoch={start_epoch}, lr={current_lr}, peak_warmup_epochs={current_peak_warm}"
+        )
+
+    if not did_resume:
+        print("[TRAIN] No existing checkpoint found. Training from scratch.")
+
+    effective_total_epochs = TOTAL_EPOCHS
+    if RESUME_IF_AVAILABLE and os.path.exists(CKPT_WEIGHTS_BEST) and not os.path.exists(CKPT_FULL_LATEST) and not os.path.exists(CKPT_FULL_BEST) and did_resume:
+        effective_total_epochs = WEIGHTS_ONLY_FINETUNE_EPOCHS
+        print(f"[INFO] weights-only fallback mode: run fine-tune for {effective_total_epochs} epochs")
+
+    train_model_v2(
+        model=model_base_train,
+        train_loader=train_loader_all,
+        total_epochs=effective_total_epochs,
+        lr=current_lr,
+        device=device,
+        top_k=top_k,
+        kl_weight=KL_BASE_WEIGHT,
+        warmup_epochs=warmup_ep,
+        save_path_weights_best=CKPT_WEIGHTS_BEST,
+        save_path_full_best=CKPT_FULL_BEST,
+        save_path_full_latest=CKPT_FULL_LATEST,
+        optimizer=optimizer_base,
+        thr_frac=V2_THR_FRAC,
+        tau=V2_TAU,
+        q_upper=V2_Q_UPPER,
+        softarg_temp=V2_SOFTARG_T,
+        lam_thr=V2_LAM_THR,
+        lam_q=V2_LAM_Q,
+        lam_time=V2_LAM_TIME,
+        lam_amp=V2_LAM_AMP,
+        lam_topk=V2_LAM_TOPK,
+        peak_warmup_epochs=current_peak_warm,
+        grad_clip_norm=1.0,
+        logvar_min=-10.0,
+        logvar_max=5.0,
+        load_scale=load_scale,
+        topk_k=V2_TOPK_PEAK_K,
+        start_epoch=start_epoch,
+        best_train_init=best_train_init,
+        best_epoch_init=best_epoch_init,
+    )
+    print(f"[✓] Training stage finished.\n")
+
+    # ============================================================
+    # 3) Eval best model on XFMR + export XLSX
+    # ============================================================
+    print(f"[EVAL] Evaluating BASE model on XFMR={EVAL_XFMR} ...")
+
+    model_base = VariationalSeq2Seq_meta(
+        xprime_dim=xprime_dim,
+        input_dim=input_dim,
+        hidden_size=hidden_dim,
+        latent_size=latent_dim,
+        output_len=output_len,
+        n_externals=n_externals,
+        output_dim=output_dim,
+        num_layers=num_layers,
+        dropout=0.1,
+        thermal_indices=thermal_indices,
+        workday_index=workday_index,
+        season_index=season_index,
+    ).to(device)
+
+    if os.path.exists(CKPT_WEIGHTS_BEST):
+        state_base = torch.load(CKPT_WEIGHTS_BEST, map_location=device)
+        model_base.load_state_dict(state_base, strict=True)
+        print(f"[✓] BASE weights loaded from {CKPT_WEIGHTS_BEST}")
+    elif os.path.exists(CKPT_FULL_BEST):
+        ckpt = torch.load(CKPT_FULL_BEST, map_location=device)
+        model_base.load_state_dict(ckpt["model_state_dict"], strict=True)
+        print(f"[✓] BASE weights loaded from full ckpt {CKPT_FULL_BEST}")
+    else:
+        raise FileNotFoundError("No trained checkpoint found for evaluation.")
+
+    evaluate_model(
+        model=model_base,
+        test_loader=test_loader_eval,
+        loss_fn=nn.MSELoss(),
+        device=device,
+        data_name=f"{data_name}_xfmr{EVAL_XFMR}_{TAG}",
+        model_name=f"VAE_BASE_{TAG}",
+        data_export_list=plot_data_frames,
+    )
+
+    if plot_data_frames:
+        final_plot_df = pd.concat(plot_data_frames, ignore_index=True)
+        final_plot_df["XFMR"] = int(EVAL_XFMR)
+        final_plot_df.to_excel(XLSX_EXPORT_PATH, index=False)
+        print(f"[✓] Plot data saved to {XLSX_EXPORT_PATH}")
+    else:
+        print("[WARN] No plot_data_frames collected; XLSX not saved.")
