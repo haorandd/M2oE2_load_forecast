@@ -83,6 +83,9 @@ When reproducing the newest results, please make sure that:
 - the **latest `main`** is used,
 - the corresponding **`model_v2`** is used,
 - and the experiment is interpreted as a **base-only residential variant with full future-24h weather input**.
+- Once you trained the model, there will be a .pt file created. It will not replaced the old one, if you did not delete the old .pt, it will load the old one and not retrain the model.
+- There is a sample plot code named"Sample_plot_code" for the latest main.
+- The training process has 150 warmup epochs, during the warnmup, no best model will be saved. The loss will increase as we are increasing the ratio of various loss so do not be afraid.
 
 In short, the current implementation should be understood as a **matched `main` + `model_v2` pair**, where the main script defines the expanded weather features and `model_v2` is the architecture updated to consume them correctly.
 
