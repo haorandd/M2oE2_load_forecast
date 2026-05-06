@@ -22,6 +22,7 @@ The GEFCom2014 data were originally released as the appendix / supplementary mat
 > "Probabilistic energy forecasting: Global Energy Forecasting Competition 2014 and beyond,"  
 > *International Journal of Forecasting*, 32(3), 896--913, 2016.  
 > DOI: 10.1016/j.ijforecast.2016.02.001
+
 https://blog.drhongtao.com/2017/03/gefcom2014-load-forecasting-data.html
 
 Please cite the original GEFCom2014 paper when using this dataset.
