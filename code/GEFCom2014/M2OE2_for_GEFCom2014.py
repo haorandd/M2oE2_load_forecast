@@ -911,7 +911,7 @@ if __name__ == "__main__":
     print(f"Using device: {device}")
 
     data_name = "GEFCom2014"
-    model_name = f"M2OE2_v1_{output_len}hours_protocol_avgtemp_wds_minmax_kl0001_ep1500_valCRPS_es100_det"
+    model_name = f"M2OE2"
     model_path = f"{data_name}_{model_name}_best_model.pt"
 
     # Latest cleaned data + avg temperature + actually use workday and season
