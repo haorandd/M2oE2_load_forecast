@@ -125,6 +125,16 @@ To reproduce the GEFCom2014 benchmark-style experiment, run:
 
 python M2OE2_for_GEFCom2014_papersetting.py
 
+The GEFCom2014-L data were originally released as the appendix / supplementary material of the GEFCom2014 paper. Please cite the original paper when using this dataset:
+
+Tao Hong, Pierre Pinson, Shu Fan, Hamidreza Zareipour, Alberto Troccoli, and Rob J. Hyndman, "Probabilistic energy forecasting: Global Energy Forecasting Competition 2014 and beyond," International Journal of Forecasting, 32(3), 896–913, 2016.
+
+The dataset can be accessed through the paper supplementary material. A download link is also provided by Tao Hong's GEFCom2014 load forecasting data page.
+
+
+
+
+
 
 📜 License
 This repository is licensed under the MIT License.
