@@ -72,23 +72,6 @@ The following settings are used for the GEFCom2014-L experiment:
 
 ---
 
-## Evaluation Protocol
-
-The reported main results use **rolling first-step evaluation**.
-
-For each rolling window, the model outputs a 24-hour probabilistic forecast. However, the reported rolling first-step metrics only evaluate the first forecast horizon:
-
-```python
-mu_first = mu_preds[:, :, 0]
-tgt_first = tgt[:, :, 0]
-```
-
-This follows the original rolling short-term forecasting behavior of the M2OE2 sequence-to-sequence setup.
-
-**Important note:**  
-The reported comparison demonstrates rolling short-term probabilistic forecasting performance under the GEFCom2014-L data split and raw-scale metric setting. It is not a strict full 24-hour direct day-ahead evaluation.
-
----
 
 ## Metrics
 
@@ -133,7 +116,7 @@ The script will:
 4. Train M2OE2 with validation-CRPS early stopping.
 5. Save the best model checkpoint.
 6. Evaluate validation and test performance on both normalized and raw scales.
-7. Print rolling first-step benchmark-style probabilistic metrics.
+7. Print benchmark-style probabilistic metrics.
 
 ---
 
