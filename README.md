@@ -123,7 +123,6 @@ The evaluation metrics are computed after inverse normalization on the raw load 
 
 To reproduce the GEFCom2014 benchmark-style experiment, run:
 
-```bash
 python M2OE2_for_GEFCom2014_papersetting.py
 
 
