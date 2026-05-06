@@ -121,6 +121,11 @@ The evaluation metrics are computed after inverse normalization on the raw load 
 | AHLC-QRNN | 2.42 | 21.43 | 40.84 |
 | **M2OE2** | **1.99** | **17.84** | **30.37** |
 
+To reproduce the GEFCom2014 benchmark-style experiment, run:
+
+```bash
+python M2OE2_for_GEFCom2014_papersetting.py
+
 
 📜 License
 This repository is licensed under the MIT License.
