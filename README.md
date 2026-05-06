@@ -121,7 +121,6 @@ The evaluation metrics are computed after inverse normalization on the raw load 
 | AHLC-QRNN | 2.42 | 21.43 | 40.84 |
 | **M2OE2** | **1.99** | **17.84** | **30.37** |
 
-Note: The M2OE2 result is evaluated under a rolling first-step setting, where only the first forecast horizon of each rolling prediction window is used. Therefore, this comparison demonstrates rolling short-term probabilistic forecasting performance under the benchmark data split and metric scale, rather than a strict full 24-hour direct day-ahead evaluation.
 
 📜 License
 This repository is licensed under the MIT License.
