@@ -105,6 +105,24 @@ VariationalDecoder_meta_predvar: predicted uncertainty (used by default)
 Forecasts are visualized with predicted mean and ±1 std confidence band.
 Saved plots can be found in the ./result/ folder after training.
 
+
+## 📊 GEFCom2014 Benchmark-Style Comparison
+
+We additionally evaluate M2OE2 on the GEFCom2014-L load forecasting benchmark under a setting aligned with prior probabilistic forecasting studies. The model uses a 24-hour forecasting horizon (`K=24`), a learning rate of `1e-3`, average temperature information from 25 weather stations, and calendar features including workday and season labels. The data split follows the benchmark protocol: 2006–2009 for training, 2010 for validation, and 2011 for testing.
+
+The evaluation metrics are computed after inverse normalization on the raw load scale. We report Quantile Score / Pinball loss and Winkler Scores for 50% and 90% prediction intervals.
+
+| Model | QS / Pinball | WS (50%) | WS (90%) |
+|---|---:|---:|---:|
+| iQRNN | 2.71 | 23.94 | 47.11 |
+| Q-ResNet | 2.69 | 23.64 | 46.50 |
+| ResNetPlus | 2.52 | 22.41 | 42.63 |
+| Basic QRNN | 2.45 | 21.75 | 41.80 |
+| AHLC-QRNN | 2.42 | 21.43 | 40.84 |
+| **M2OE2** | **1.99** | **17.84** | **30.37** |
+
+Note: The M2OE2 result is evaluated under a rolling first-step setting, where only the first forecast horizon of each rolling prediction window is used. Therefore, this comparison demonstrates rolling short-term probabilistic forecasting performance under the benchmark data split and metric scale, rather than a strict full 24-hour direct day-ahead evaluation.
+
 📜 License
 This repository is licensed under the MIT License.
 
