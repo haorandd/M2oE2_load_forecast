@@ -65,8 +65,6 @@ The following settings are used for the GEFCom2014-L experiment:
 | Weather feature | Average temperature from 25 weather stations |
 | Calendar features | Workday and season |
 | Scaling | Global MinMax scaling |
-| Model selection | Validation CRPS early stopping |
-| Early stopping patience | 100 epochs |
 | Evaluation scale | Raw load scale after inverse normalization |
 | Main metrics | QS / Pinball, WS(50%), WS(90%) |
 
