@@ -145,8 +145,6 @@ Using validation-CRPS early stopping and deterministic VAE evaluation, the best 
 | AHLC-QRNN | 2.42 | 21.43 | 40.84 |
 | **M2OE2** | **1.99** | **17.84** | **30.37** |
 
-Again, the M2OE2 result is based on rolling first-step evaluation. It should not be interpreted as a strict full 24-hour direct day-ahead comparison.
-
 ---
 
 ## Reproducibility Notes
