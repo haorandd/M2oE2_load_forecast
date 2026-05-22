@@ -897,7 +897,7 @@ if __name__ == "__main__":
     seed = 42
     set_seed(seed)
     batch_size = 16
-    epochs = 1500
+    epochs = 500
     lr = 1e-3
     kl_weight = 0.001
     xprime_dim = 40
