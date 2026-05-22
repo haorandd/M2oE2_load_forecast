@@ -134,7 +134,7 @@ If this file already exists, the script loads it directly and skips retraining. 
 
 ## Current Result
 
-Using validation-CRPS early stopping and deterministic VAE evaluation, the best model was selected at epoch 435. On the 2011 test set, the rolling first-step raw-scale probabilistic metrics are:
+With early stopping, the best model was selected at epoch 435. On the 2011 test set, the raw-scale probabilistic metrics are:
 
 | Model | QS / Pinball | WS (50%) | WS (90%) |
 |---|---:|---:|---:|
