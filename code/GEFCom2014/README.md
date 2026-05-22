@@ -60,7 +60,6 @@ The following settings are used for the GEFCom2014-L experiment:
 | Dataset | GEFCom2014-L |
 | Forecast horizon | `K = 24` |
 | Learning rate | `1e-3` |
-| KL weight | `0.001` |
 | Training period | 2006--2009 |
 | Validation period | 2010 |
 | Test period | 2011 |
