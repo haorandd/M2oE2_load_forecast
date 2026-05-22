@@ -105,7 +105,7 @@ pip install numpy pandas torch scikit-learn matplotlib
 Then run:
 
 ```bash
-python M2OE2_for_GEFCom2014_papersetting.py
+M2OE2_for_GEFCom2014.py
 ```
 
 The script will:
@@ -125,7 +125,7 @@ The script will:
 The default checkpoint name is:
 
 ```text
-GEFCom2014_M2OE2_v1_24hours_protocol_avgtemp_wds_minmax_kl0001_ep1500_valCRPS_es100_det_best_model.pt
+GEFCom2014_M2OE2_best_model.pt
 ```
 
 If this file already exists, the script loads it directly and skips retraining. To retrain from scratch, delete the checkpoint file or change the `model_name` in the script.
