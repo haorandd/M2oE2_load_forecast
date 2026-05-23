@@ -159,7 +159,7 @@ def _pack_hourly_df_to_weeks(df_hourly: pd.DataFrame, feature_names: List[str]):
 
 
 def get_data_GEFCom2014_multi_latest(
-    root: str = "/content/drive/MyDrive/M2oE2_For_Zhe/data/GEFCom2014 Data/GEFCom2014-L_V2/Load",
+    root: str = "your path",
     timestamp_col: str = "TIMESTAMP",
     tasks: List[int] = None,
 ):
