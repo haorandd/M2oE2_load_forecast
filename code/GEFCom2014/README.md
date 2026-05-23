@@ -43,11 +43,13 @@ data/
                 └── L15-train.csv
 ```
 
-If your local path is different, modify the `root` argument in:
+If your local path is different, modify the `root` argument in line 162 in M2OE2_for_GEFCom2014.py:
 
 ```python
-get_data_GEFCom2014_avgtemp_latest(...)
+root: str = "your path"
 ```
+Change the root to yours. 
+
 
 ---
 
