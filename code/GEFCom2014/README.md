@@ -287,6 +287,21 @@ If you use this repository or the M²oE² model, please cite the M²oE² paper:
   journal={arXiv preprint arXiv:2506.23201},
   year={2025}
 }
+@article{li2025m2oe2gl,
+  title={M$^2$OE$^2$-GL: A Family of Probabilistic Load Forecasters That Scales to Massive Customers},
+  author={Li, Haoran and Cheng, Zhe and Guo, Muhao and Weng, Yang and Sun, Yannan and Tran, Victor and Chainaranont, John},
+  journal={arXiv preprint arXiv:2511.17623},
+  year={2025},
+  eprint={2511.17623},
+  archivePrefix={arXiv}
+}
+@inproceedings{li2025exarnn,
+  title={ExARNN: An Environment-Driven Adaptive RNN for Learning Non-Stationary Power Dynamics},
+  author={Li, Haoran and Guo, Muhao and Weng, Yang and Ilic, Marija and Ruan, Guangchun},
+  booktitle={2025 IEEE Power \& Energy Society General Meeting (PESGM)},
+  pages={1--5},
+  year={2025}
+}
 ```
 
 If you use the GEFCom2014-L dataset, please cite:
