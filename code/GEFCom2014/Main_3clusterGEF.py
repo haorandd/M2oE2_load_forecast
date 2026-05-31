@@ -671,7 +671,7 @@ def _pack_gefcom_calendar_years_to_52_weeks(
 
 
 def get_data_GEFCom2014_avgtemp_latest(
-    zip_path: str = "/content/drive/MyDrive/M2oE2_For_Zhe/data/GEFCom2014-L_V2.zip",
+    zip_path: str = "GEFCom2014-L_V2.zip",
     include_task15_solution: bool = True,
 ):
     """
@@ -1842,7 +1842,7 @@ if __name__ == "__main__":
 
     # 【新增】灵活控制 Encoder 使用前几周的数据 (1 或 2)
 
-    zip_path = "/content/drive/MyDrive/M2oE2_For_Zhe/data/GEFCom2014-L_V2.zip"
+    zip_path = "GEFCom2014-L_V2.zip"
     full = _read_gefcom2014_hourly_from_zip(
         zip_path=zip_path,
         include_task15_solution=True,
