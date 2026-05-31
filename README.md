@@ -139,9 +139,37 @@ The dataset can be accessed through the paper supplementary material. A download
 This repository is licensed under the MIT License.
 
 🙋‍♂️ Acknowledgements
-Developed by [Haoran Li and Muhao Guo]. If you use this repo in your work, please cite or acknowledge the project.
+Developed by [Haoran Li, Zhe Cheng and Muhao Guo]. If you use this repo in your work, please cite or acknowledge the project.
 
-If you have any questions, please contact lhaoran@asu.edu or haorandd@mit.edu
+If you have any questions, please contact lhaoran@asu.edu, haorandd@mit.edu or zcheng55@asu.edu.
+
+## Citation
+
+If you use this repository or the M²oE² model, please cite the M²oE² paper:
+
+```bibtex
+@article{li2025m2oe2,
+  title={External Data-Enhanced Meta-Representation for Adaptive Probabilistic Load Forecasting},
+  author={Li, Haoran and Guo, Muhao and Ilic, Marija and Weng, Yang and Ruan, Guangchun},
+  journal={arXiv preprint arXiv:2506.23201},
+  year={2025}
+}
+@article{li2025m2oe2gl,
+  title={M$^2$OE$^2$-GL: A Family of Probabilistic Load Forecasters That Scales to Massive Customers},
+  author={Li, Haoran and Cheng, Zhe and Guo, Muhao and Weng, Yang and Sun, Yannan and Tran, Victor and Chainaranont, John},
+  journal={arXiv preprint arXiv:2511.17623},
+  year={2025},
+  eprint={2511.17623},
+  archivePrefix={arXiv}
+}
+@inproceedings{li2025exarnn,
+  title={ExARNN: An Environment-Driven Adaptive RNN for Learning Non-Stationary Power Dynamics},
+  author={Li, Haoran and Guo, Muhao and Weng, Yang and Ilic, Marija and Ruan, Guangchun},
+  booktitle={2025 IEEE Power \& Energy Society General Meeting (PESGM)},
+  pages={1--5},
+  year={2025}
+}
+```
 
 
 
