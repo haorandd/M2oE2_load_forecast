@@ -24,9 +24,6 @@ All code files, checkpoints, result files, images, and the dataset zip are expec
 ├── Main_3clusterGEF.py
 ├── M2OE2_3cluster.pt
 ├── M2OE2_3cluster_eval_results.json
-├── metrics_check.json
-├── table3_table4_page.png
-├── table4_performance.png
 └── README.md
 ```
 
