@@ -1,0 +1,246 @@
+{
+  "model_name": "M2OE2_1cluster",
+  "model_path": "M2OE2_1cluster.pt",
+  "optimizer": "AdamW",
+  "lr": 0.001,
+  "adam_betas": [
+    0.9,
+    0.95
+  ],
+  "weight_decay": 0.0001,
+  "grad_clip_norm": 1.0,
+  "use_lr_scheduler": true,
+  "scheduler": {
+    "type": "warmup_cosine",
+    "warmup_ratio": 0.04,
+    "min_lr_ratio": 0.1
+  },
+  "batch_size": 13,
+  "epochs": 1500,
+  "kl_weight": 0.0001,
+  "external_raw_dim": 31,
+  "ext_variables": [
+    "temp",
+    "workday",
+    "holiday",
+    "month"
+  ],
+  "ext_keys": [
+    "temp",
+    "temp_fc_tplus00",
+    "temp_fc_tplus01",
+    "temp_fc_tplus02",
+    "temp_fc_tplus03",
+    "temp_fc_tplus04",
+    "temp_fc_tplus05",
+    "temp_fc_tplus06",
+    "temp_fc_tplus07",
+    "temp_fc_tplus08",
+    "temp_fc_tplus09",
+    "temp_fc_tplus10",
+    "temp_fc_tplus11",
+    "temp_fc_tplus12",
+    "temp_fc_tplus13",
+    "temp_fc_tplus14",
+    "temp_fc_tplus15",
+    "temp_fc_tplus16",
+    "temp_fc_tplus17",
+    "temp_fc_tplus18",
+    "temp_fc_tplus19",
+    "temp_fc_tplus20",
+    "temp_fc_tplus21",
+    "temp_fc_tplus22",
+    "temp_fc_tplus23",
+    "workday",
+    "workday_future24_mean",
+    "holiday",
+    "holiday_future24_mean",
+    "month_sin",
+    "month_cos"
+  ],
+  "num_meta_experts": 4,
+  "expert_specs": [
+    {
+      "name": "temp",
+      "indices": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        15,
+        16,
+        17,
+        18,
+        19,
+        20,
+        21,
+        22,
+        23,
+        24
+      ],
+      "feature_keys": [
+        "temp",
+        "temp_fc_tplus00",
+        "temp_fc_tplus01",
+        "temp_fc_tplus02",
+        "temp_fc_tplus03",
+        "temp_fc_tplus04",
+        "temp_fc_tplus05",
+        "temp_fc_tplus06",
+        "temp_fc_tplus07",
+        "temp_fc_tplus08",
+        "temp_fc_tplus09",
+        "temp_fc_tplus10",
+        "temp_fc_tplus11",
+        "temp_fc_tplus12",
+        "temp_fc_tplus13",
+        "temp_fc_tplus14",
+        "temp_fc_tplus15",
+        "temp_fc_tplus16",
+        "temp_fc_tplus17",
+        "temp_fc_tplus18",
+        "temp_fc_tplus19",
+        "temp_fc_tplus20",
+        "temp_fc_tplus21",
+        "temp_fc_tplus22",
+        "temp_fc_tplus23"
+      ]
+    },
+    {
+      "name": "workday",
+      "indices": [
+        25,
+        26
+      ],
+      "feature_keys": [
+        "workday",
+        "workday_future24_mean"
+      ]
+    },
+    {
+      "name": "holiday",
+      "indices": [
+        27,
+        28
+      ],
+      "feature_keys": [
+        "holiday",
+        "holiday_future24_mean"
+      ]
+    },
+    {
+      "name": "month",
+      "indices": [
+        29,
+        30
+      ],
+      "feature_keys": [
+        "month_sin",
+        "month_cos"
+      ]
+    }
+  ],
+  "top_k": 4,
+  "elapsed_seconds": 0.8152401447296143,
+  "validation": {
+    "normalized": {
+      "MSE": 0.0009113388483995919,
+      "RMSE": 0.03018838929786735,
+      "NLL": -2.295961093553257,
+      "CRPS": 0.015267493523957528,
+      "QuantileLoss": 0.006806905962463118,
+      "WinklerScore": 0.11767677509741033,
+      "PeakValueError_abs": 0.02418200786297138,
+      "PeakValueError_pct": 3.353497844475966,
+      "n_points": 8736,
+      "n_samples": 52,
+      "mode": "day_ahead"
+    },
+    "raw": {
+      "raw_MSE": 82.78780870821886,
+      "raw_RMSE": 9.098780616556201,
+      "raw_NLL": 3.4124770950485064,
+      "raw_CRPS": 4.601622752654246,
+      "raw_QuantileLoss": 2.05160148909386,
+      "raw_WinklerScore_90PI": 35.46777969751603,
+      "raw_PeakValueError_abs": 7.288459190955529,
+      "raw_PeakValueError_pct": 3.110095801261755,
+      "raw_n_points": 8736,
+      "raw_n_samples": 52,
+      "mode": "day_ahead"
+    },
+    "paper3_raw_all_horizons": {
+      "pinball_allq": 2.3233664510834693,
+      "winkler_50": 20.674641927083332,
+      "winkler_90": 35.46777969751603,
+      "n_points": 8736,
+      "mode": "day_ahead",
+      "scale": "raw"
+    },
+    "paper3_raw_day_ahead": {
+      "pinball_allq_daily": 2.3233664510834693,
+      "winkler_50_daily": 20.674641927083332,
+      "winkler_90_daily": 35.46777969751603,
+      "n_points_daily": 8736,
+      "mode": "day_ahead",
+      "scale": "raw"
+    }
+  },
+  "test": {
+    "normalized": {
+      "MSE": 0.001236241843019213,
+      "RMSE": 0.03516023098643143,
+      "NLL": -2.177967812115456,
+      "CRPS": 0.015182083124642844,
+      "QuantileLoss": 0.0068446708176744435,
+      "WinklerScore": 0.1318009484818567,
+      "PeakValueError_abs": 0.02862614794419362,
+      "PeakValueError_pct": 4.360289986316975,
+      "n_points": 8736,
+      "n_samples": 52,
+      "mode": "day_ahead"
+    },
+    "raw": {
+      "raw_MSE": 112.30263063759158,
+      "raw_RMSE": 10.597293552487427,
+      "raw_NLL": 3.5304706280048075,
+      "raw_CRPS": 4.575879889966804,
+      "raw_QuantileLoss": 2.0629839122804823,
+      "raw_WinklerScore_90PI": 39.7248052240728,
+      "raw_PeakValueError_abs": 8.627920297475962,
+      "raw_PeakValueError_pct": 4.013737577658434,
+      "raw_n_points": 8736,
+      "raw_n_samples": 52,
+      "mode": "day_ahead"
+    },
+    "paper3_raw_all_horizons": {
+      "pinball_allq": 2.3091590240342454,
+      "winkler_50": 20.41074424436241,
+      "winkler_90": 39.7248052240728,
+      "n_points": 8736,
+      "mode": "day_ahead",
+      "scale": "raw"
+    },
+    "paper3_raw_day_ahead": {
+      "pinball_allq_daily": 2.3091590240342454,
+      "winkler_50_daily": 20.41074424436241,
+      "winkler_90_daily": 39.7248052240728,
+      "n_points_daily": 8736,
+      "mode": "day_ahead",
+      "scale": "raw"
+    }
+  },
+  "original_model_name": "M2OE2_v2_24h_dayahead_avgtemp_futureTemp24_exttemp-workday-holiday-month_blockExpertAuto_kl0001_ep1500_valMSE_det_bs13_AdamW_warmcos04_minlr0p1_clip1p0_wd1e-04",
+  "original_model_path": "GEFCom2014_M2OE2_v2_24h_dayahead_avgtemp_futureTemp24_exttemp-workday-holiday-month_blockExpertAuto_kl0001_ep1500_valMSE_det_bs13_AdamW_warmcos04_minlr0p1_clip1p0_wd1e-04_best_model.pt"
+}
