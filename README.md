@@ -122,9 +122,7 @@ The evaluation metrics are computed after inverse normalization on the raw load 
 | **GRU-M²oE² (Weather station: 25 → 1)** | **2.31** | **20.41** | **39.72** |
 | **GRU-M²oE² (Weather station: 25 → 3)** | **2.27** | **20.06** | **39.35** |
 
-To reproduce the GEFCom2014 benchmark-style experiment, run:
-
-python M2OE2_for_GEFCom2014_papersetting.py
+To reproduce the GEFCom2014 benchmark-style experiment, go to code/GEFCom2014 for detail information.
 
 The GEFCom2014-L data were originally released as the appendix / supplementary material of the GEFCom2014 paper. Please cite the original paper when using this dataset:
 
