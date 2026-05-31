@@ -112,14 +112,15 @@ We additionally evaluate M2OE2 on the GEFCom2014-L load forecasting benchmark un
 
 The evaluation metrics are computed after inverse normalization on the raw load scale. We report Quantile Score / Pinball loss and Winkler Scores for 50% and 90% prediction intervals.
 
-| Model | QS / Pinball | WS (50%) | WS (90%) |
+| Model | QS | WS (50%) | WS (90%) |
 |---|---:|---:|---:|
-| iQRNN | 2.71 | 23.94 | 47.11 |
-| Q-ResNet | 2.69 | 23.64 | 46.50 |
-| ResNetPlus | 2.52 | 22.41 | 42.63 |
-| Basic QRNN | 2.45 | 21.75 | 41.80 |
-| AHLC-QRNN | 2.42 | 21.43 | 40.84 |
-| **M2OE2** | **1.99** | **17.84** | **30.37** |
+| iQRNN [1] | 2.71 | 23.94 | 47.11 |
+| Q-ResNet [2] | 2.69 | 23.64 | 46.50 |
+| ResNetPlus [3] | 2.52 | 22.41 | 42.63 |
+| Basic QRNN [4] | 2.45 | 21.75 | 41.80 |
+| AHLC-QRNN [4] | 2.42 | 21.43 | 40.84 |
+| **GRU-M²oE² (Weather station: 25 → 1)** | **2.31** | **20.41** | **39.72** |
+| **GRU-M²oE² (Weather station: 25 → 3)** | **2.27** | **20.06** | **39.35** |
 
 To reproduce the GEFCom2014 benchmark-style experiment, run:
 
