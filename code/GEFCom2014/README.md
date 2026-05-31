@@ -137,19 +137,6 @@ The station clusters are:
 | 1 | w6, w14, w18, w21 |
 | 2 | w9 |
 
----
-
-## Paper Tables
-
-The following images reproduce the experimental-setting and performance tables used in the paper draft.
-
-![Table 3 and Table 4](table3_table4_page.png)
-
-For a clearer view of the performance table:
-
-![Table 4: Probabilistic Load Forecasting Performance on GEFCom2014](table4_performance.png)
-
----
 
 ## Experimental Settings for GEFCom2014
 
