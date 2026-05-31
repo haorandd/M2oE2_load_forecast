@@ -49,7 +49,7 @@ Please cite the original GEFCom2014 paper when using this dataset.
 The scripts expect the GEFCom2014-L zip file at:
 
 ```python
-zip_path = "/content/drive/MyDrive/M2oE2_For_Zhe/data/GEFCom2014-L_V2.zip"
+zip_path = "data/GEFCom2014-L_V2.zip"
 ```
 
 If your local path is different, update `zip_path` in:
