@@ -308,7 +308,7 @@ In the current script, LoRA fine-tuning is performed on the target transformer:
 
 🙋 **Acknowledgements** Developed by **Haoran Li, Muhao Guo, and Zhe Cheng**. If you use this repo in your work, please cite or acknowledge the project.
 
-If you have any questions, please contact [haoran@asu.edu](mailto:haoran@asu.edu), [haorandd@mit.edu](mailto:haorandd@mit.edu), or [zcheng55@asu.edu](mailto:zcheng55@asu.edu).
+If you have any questions, please contact [haoran@asu.edu](mailto:haoran@asu.edu) or [zcheng55@asu.edu](mailto:zcheng55@asu.edu).
 
 ## References
 
