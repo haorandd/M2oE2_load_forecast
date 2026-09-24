@@ -7,7 +7,7 @@ Two weather-input settings are provided:
 - **Weather station: 25 → 1**: average temperature across all 25 weather stations.
 - **Weather station: 25 → 3**: average temperatures of 3 station clusters derived from the 25 weather stations.
 
-All code files, checkpoints, result files, images, and the dataset zip are expected to be placed in the **same repository directory**. No additional subfolders are required.
+All code files, checkpoints, result files, images, and the dataset zip are expected to be placed in the **same repository directory**. No additional subfolders are required. One example result plot is attached in GEFCom2014_monthly_details.pdf for reference.
 
 ---
 
